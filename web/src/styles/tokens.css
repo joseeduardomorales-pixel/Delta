@@ -1,0 +1,70 @@
+/* Delta — Matrix design tokens
+ * UI Developer persona. Locked design language; do not redesign.
+ * Pure black + neon green + JetBrains Mono, mobile-first, ≥44px taps.
+ */
+
+:root {
+  /* Matrix palette */
+  --matrix-black: #000000;
+  --matrix-green: #00FF41;
+  --matrix-green-dim: #00B82E;
+  --matrix-green-faint: rgba(0, 255, 65, 0.12);
+  --matrix-green-line: rgba(0, 255, 65, 0.25);
+  --matrix-red: #FF3B3B;
+  --matrix-amber: #FFB300;
+  --matrix-fg: #E6FFEC;
+  --matrix-fg-dim: #8FBFA0;
+  --matrix-fg-muted: #4A6B53;
+
+  /* Typography */
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular',
+               Menlo, Consolas, monospace;
+
+  /* Layout */
+  --tap-target: 44px;
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  /* Motion */
+  --transition-fast: 120ms ease-out;
+  --transition-base: 200ms ease-out;
+
+  color-scheme: dark;
+}
+
+html, body, #root {
+  background-color: var(--matrix-black);
+  color: var(--matrix-fg);
+  font-family: var(--font-mono);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+/* Disable hover-dependent styling on touch primary devices.
+ * Foundation rule: no hover-dependent UI. */
+@media (hover: none) {
+  *:hover { all: revert; }
+}
+
+::selection {
+  background: var(--matrix-green);
+  color: var(--matrix-black);
+}
+
+button, input, textarea, select {
+  font-family: inherit;
+  color: inherit;
+}
+
+button {
+  min-height: var(--tap-target);
+  min-width: var(--tap-target);
+}
