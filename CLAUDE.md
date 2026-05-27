@@ -281,16 +281,25 @@ techs logging work in the shop NOW, so later we can pull a
 maintenance kardex per asset and detect reworks by tech or by
 failure class.
 
-PRIMARY USER (Day 1): SHOP TECHNICIAN
-DEFERRED USERS (later builds, NOT now): admin, dispatcher, driver
-  pre-trip inspections
+PRIMARY USERS (v4): SHOP TECHNICIAN (chat surface), PM/ADMIN (admin
+  surface). Dispatcher role exists with limited write rights.
+DEFERRED ROLES: driver (enum exists in schema, no users, no policies).
 
-CORE UX PRINCIPLE: Techs DO NOT open work orders. They tap one of
-five action buttons, a chat box opens, they dictate (native OS
-keyboard mic) or type in plain English. Claude API interprets intent,
-classifies the entry, fetches relevant context (pending issues, last
-odometer, upcoming PMs), and logs everything with timestamps and
-photos.
+CORE UX PRINCIPLE (v4 pivot from v3):
+Techs see ONE screen — a chat thread + input box. They dictate via
+native OS keyboard mic or type in plain English. The backend routes
+every message through Claude (tool-use), which interprets intent,
+fetches context (pending issues, last meter reading, upcoming PMs),
+and writes structured rows to `work_orders` — the kardex spine.
+
+Every Claude-driven write to `work_orders` echoes a confirmation back
+("Logged WO-1487 on CC07 at 86,432 mi — say 'undo' to remove") with
+a 5-minute grace window for the tech to undo. This is the
+Sentinel-class safety net: silent miswrites can't happen.
+
+PM/admin uses a separate, desktop-friendly surface at /admin/* for
+managing users, defining PM schedules, and reviewing the per-asset
+work-order history (the kardex view).
 
 DESIGN LANGUAGE (locked, do not redesign):
   - Pure black background (#000000)
@@ -308,39 +317,55 @@ TECH STACK:
   Storage: Supabase Storage (action photos)
   Auth: Supabase Auth (email/password)
   AI: Anthropic Claude API (latest Sonnet) via server-side proxy
-  Telematics: Intangles API (server-side wrapper)
+  Telematics (truck miles): Intangles + Monarch
+    (Monarch deferred until docs/creds land)
+  Telematics (reefer hours): TrackFleet + manual entry
+    (TrackFleet deferred until docs/creds land)
+  Fleet catalog source: Alvys API (read-only mirror in Supabase
+    via periodic sync; never queried directly from the client)
   Offline queue: Dexie (IndexedDB wrapper) — interface only in
     foundation, no sync orchestration yet
   Deployment: Render
   Custom domain: delta.coldcargo.us
   GitHub: github.com/joseeduardomorales-pixel/delta (personal acct)
 
-NAVIGATION (locked, do not redesign). Foundation creates the
-buttons/routes but ZERO functional flows behind them. Taps show
-"coming soon" toasts except for Catalogs (read-only list) and logout.
+ROUTES (v4):
 
-  Actions
-    - "I am going to…"     (forward intent)
-    - "What's the plan?"   (Delta suggests work)
-    - Report Issue         (passive flag)
-    - Report a Job         (retroactive log)
-    - Start Inspection     (later build)
-  Plan
-    - Upcoming Jobs        (later build)
-  Catalogs
-    - Drivers              (stub — no drivers Day 1)
-    - Trucks
-    - Trailers
-  Management
-    - Campaign Scheduling  (later build)
-    - Maintenance Scheduling (later build)
+  Tech / dispatcher / admin (all roles):
+    /login                       email + password (Supabase Auth)
+    /                            chat thread + input + file attach
+    /assets/:unit_number         read-only work-order history (kardex)
 
-ASSETS TO SEED: 17 trucks (CC01–CC17), trailer fleet (~21 reefer
-trailers), reefer units (Carrier Transicold + Thermo King). Ask PM
-for VIN/make/model/year or pull from existing source.
+  Admin-only (role-gated):
+    /admin/users                 list / add / change role / deactivate
+    /admin/pm-schedules          create / edit / bulk-import schedules
 
-USERS TO SEED: Shop technicians only. Admin/dispatcher/driver role
-enums exist in the schema but no users for those roles yet.
+All routes other than /login require an authenticated session.
+Role-gating is enforced at the route boundary (router guard) AND in
+RLS at the DB layer — defense in depth.
+
+PERMISSION MATRIX (locked):
+  Capability                              Admin   Dispatch   Tech
+  View assets / WOs / PM schedules         ✓        ✓         ✓
+  Report an issue (work_orders.type=issue) ✓        ✓         ✓
+  Open WOs (type=repair|pm|inspection)     ✓        ✗         ✓
+  Edit/void WOs (any)                      ✓        ✗     own+grace
+  Add/delete/change-role users             ✓        ✗         ✗
+  Create/edit PM schedules                 ✓        ✗         ✗
+  Reach /admin/* screens                   ✓        ✗         ✗
+
+DATA SOURCES (Day 1):
+  - Alvys: assets + drivers (read-only mirror, sync endpoint)
+  - Intangles: truck miles for assets with intangles_device_id
+  - Manual: reefer hours, fallback for any asset
+  - Deferred (need docs + creds): Monarch (truck miles for some
+    units), TrackFleet (reefer hours when available)
+
+BOOTSTRAP:
+  First admin is created via db/seed/bootstrap_admin.mjs from
+  ADMIN_BOOTSTRAP_* env vars. After that, all user management
+  happens through /admin/users (admin sends magic-link or temp
+  password invites).
 
 ────────────────────────────────────────────────────────────────
 DEPENDENCY MANIFEST (pre-approved — additions require PM review)
@@ -388,8 +413,16 @@ BACKEND (/api):
 BACKEND (/api) — dev only:
   vitest                     ^2
   supertest                  ^7
+  pg                         ^8       (migration runner + validation
+                                       scripts only — not used by
+                                       the runtime API)
   eslint                     ^9
   prettier                   ^3
+
+FRONTEND (/web) — dev additions vs v3 manifest:
+  fake-indexeddb             ^6       (Vitest+jsdom doesn't ship with
+                                       IndexedDB; needed for the
+                                       Dexie queue round-trip test)
 
 E2E / SMOKE (root):
   @playwright/test           ^1
@@ -402,40 +435,53 @@ Frontend bundle budget (foundation estimate):
 ────────────────────────────────────────────────────────────────
 LOCKED FOUNDATION FACTS
 ────────────────────────────────────────────────────────────────
-  GitHub:        github.com/joseeduardomorales-pixel/delta
-  Supabase:      project "delta" inside Cold Cargo org
-  Custom domain: delta.coldcargo.us
-  Primary user:  shop technician
+  GitHub:         github.com/joseeduardomorales-pixel/delta
+  Supabase:       project "delta" inside Cold Cargo org
+                  project_ref:   ycmrdnavcvbtpfdzgwih
+                  region:        us-east-1
+                  connection:    session pooler over IPv4
+                                 (aws-1-us-east-1.pooler.supabase.com:5432)
+  Custom domain:  delta.coldcargo.us  (Phase 4)
+  Primary users:  tech (chat) + admin/PM (admin screens)
   Local workspace: ~/delta (outside Dropbox, matches other Cold
                    Cargo project conventions)
+  v4 plan:        docs/foundation-v4-plan.md  (authoritative)
+  v3 prompt:      Delta_Foundation_Prompt_v3.md  (superseded; kept
+                   for historical reference)
 
 ────────────────────────────────────────────────────────────────
-SCOPE — FOUNDATION (Days 1–3)
+SCOPE — FOUNDATION (v4)
 ────────────────────────────────────────────────────────────────
-IN SCOPE:
-  1. Monorepo, CLAUDE.md, dependency install
-  2. PWA-ready React/Vite app with Matrix design tokens
-  3. Express backend with /health, /api/inference/ping,
-     /api/intangles/ping
-  4. Supabase schema centered on action_logs
-  5. Tech-first auth (other role enums exist, no users seeded)
-  6. Asset catalog seeded (trucks, trailers, reefers)
-  7. Tech user list seeded
-  8. Dexie offline queue interface only + 1 round-trip test
-  9. Anthropic SDK + Intangles wrapper as server-side scaffolds
- 10. Login + home (5 placeholder action buttons) + Catalogs list
- 11. Render deployment, custom domain, GitHub push
+IN SCOPE (across Phases 1–4):
+  Phase 1 (DONE — merged on main):
+    Monorepo, /web (Vite+React+Tailwind+PWA+Dexie), /api
+    (Express+pino+/health), CLAUDE.md, Matrix tokens, queue
+    interface + round-trip test.
+  Phase 2 (DONE — feat/foundation-schema):
+    Supabase schema (10 tables, RLS, 24 policies), storage bucket
+    `action-photos`, helper functions (is_admin, is_tech, etc.),
+    bootstrap admin user, schema validation suite.
+  Phase 3 (next):
+    Supabase Auth wiring, /api/chat with Claude tool-use,
+    confirm-after-write pattern on every work_orders insert,
+    single-screen chat UI, /admin/users + /admin/pm-schedules +
+    /assets/:unit screens, Alvys catalog sync, Intangles mileage
+    wrapper, role-gated routing.
+  Phase 4:
+    Render deploy, delta.coldcargo.us DNS+SSL, GitHub push,
+    real-phone smoke, foundation-v1 tag on main.
 
-OUT OF SCOPE (do not start, do not stub flows):
-  - Any chat flow behind the 5 action buttons
-  - Claude prompt engineering beyond the ping endpoint
-  - Intangles scheduled odometer fetches
-  - Offline queue retry, conflict resolution, sync worker
-  - Photo upload UI
-  - Inspection flow, campaign logic, PM logic, kardex display
-  - Driver-facing or dispatcher-facing screens
+OUT OF SCOPE (do not start until PM asks):
+  - Monarch tracking integration (needs docs/creds)
+  - TrackFleet integration (needs docs/creds)
+  - Offline queue sync worker / retry / conflict resolution
+  - Inspection flow beyond logging it as a work_orders.type='inspection'
+  - Campaign scheduling UI (campaign tables not yet created)
+  - Driver-facing UI (role enum exists, no users yet)
   - Dashboards, briefings, reports
-  - Any Sentinel / Alvys / Monarch integrations
+  - Any Sentinel / Alvys-writeback / Monarch / TrackFleet integrations
+    beyond what's in scope above
+  - Photo AI analysis (column exists, no pipeline yet)
 
 ────────────────────────────────────────────────────────────────
 PROJECT-SPECIFIC HARD CONSTRAINTS (on top of PROTOCOL)
@@ -447,19 +493,40 @@ PROJECT-SPECIFIC HARD CONSTRAINTS (on top of PROTOCOL)
     /api/inference/ping. No prompt logic yet.
   - NATIVE OS DICTATION ONLY: mobile keyboard mic. No Whisper, no
     in-app transcription.
-  - UNIVERSAL action_logs TABLE: every action eventually writes
-    here. This table is the spine of the kardex.
-  - ODOMETER FROM INTANGLES OR MANUAL: schema supports both via a
-    source enum.
+  - UNIVERSAL work_orders TABLE: every action eventually writes
+    here. This table is the spine of the kardex. The original v3
+    name was `action_logs` — same role, renamed to match the
+    business object.
+  - UNIFIED meter_readings TABLE: miles (trucks) AND hours (reefers)
+    live in one table. Source enum supports
+    intangles | monarch | trackfleet | manual.
+  - CONFIRM-AFTER-WRITE: every Claude-driven INSERT into work_orders
+    echoes a confirmation message to the user with a 5-minute
+    undo window. Hardcoded in public.wo_grace_window().
   - SECRETS NEVER CLIENT-SIDE: Anthropic, Intangles, Supabase
-    service-role keys all backend-only. Frontend gets the anon key.
+    service-role keys, DB password — all backend-only. Frontend
+    gets only the Supabase URL + publishable (anon) key.
+  - RLS ON EVERY TABLE: schema sanity check refuses to apply if
+    any public.* table lacks RLS. audit_log has no policies
+    (service-role only, default deny).
 
 ────────────────────────────────────────────────────────────────
 CURRENT STATE (update each phase)
 ────────────────────────────────────────────────────────────────
-Last phase completed: Phase 1 scaffold (in progress)
-Active branch:        feat/foundation-scaffold
-Next gate:            MERGE GATE at end of Phase 1
-Deployment URL:       not yet deployed
-Supabase project:     not yet created
-GitHub repo state:    local only, not pushed
+Last phase completed:  Phase 2 — Supabase schema + RLS + bootstrap
+Active branch:         feat/foundation-schema
+Next gate:             MERGE GATE at end of Phase 2 (this session)
+Deployment URL:        not yet deployed
+Supabase project:      live (project_ref ycmrdnavcvbtpfdzgwih,
+                       us-east-1); schema applied; admin user
+                       (eduardo@coldcargo.us) bootstrapped;
+                       action-photos storage bucket created.
+GitHub repo state:     local only, not pushed (Phase 4)
+
+KEY ARTIFACTS:
+  docs/foundation-v4-plan.md        authoritative v4 plan
+  supabase/migrations/0001..0003    schema, RLS, storage policies
+  db/migrate.mjs                    idempotent migration runner
+  db/seed/bootstrap_admin.mjs       one-shot admin bootstrap
+  db/validate.mjs                   schema + RLS validation (11/11)
+  api/.env                          local creds (GITIGNORED)
