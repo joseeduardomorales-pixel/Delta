@@ -295,6 +295,121 @@ async function main() {
   });
 
   // ============================================================
+  console.log('\nApproval gate (work_orders):');
+  // ============================================================
+
+  // A1: tech-created WO defaults to approval_status='pending_review'
+  await withTx(c, async () => {
+    await c.query(`UPDATE public.users SET role='tech' WHERE id=$1`, [adminId]);
+    await setJwtClaims(c, adminId);
+    const r = await c.query(
+      `INSERT INTO public.work_orders (asset_unit_number, user_id, type, title, raw_input)
+       VALUES ('TEST-AG', $1, 'pm', 'oil change', 'tested')
+       RETURNING approval_status`,
+      [adminId],
+    );
+    record(
+      'tech-created WO defaults to pending_review',
+      r.rows[0].approval_status === 'pending_review',
+      'got=' + r.rows[0].approval_status,
+    );
+  });
+
+  // A2: tech CANNOT insert a WO with approval_status='approved' (trigger)
+  await withTx(c, async () => {
+    await c.query(`UPDATE public.users SET role='tech' WHERE id=$1`, [adminId]);
+    await setJwtClaims(c, adminId);
+    let blocked = false;
+    try {
+      await c.query(
+        `INSERT INTO public.work_orders (asset_unit_number, user_id, type, title, raw_input, approval_status)
+         VALUES ('TEST-AG', $1, 'pm', 'sneaky', 'x', 'approved')`,
+        [adminId],
+      );
+    } catch (e) {
+      blocked = /admin/i.test(e.message);
+    }
+    record('tech blocked from inserting WO with approval_status=approved', blocked);
+  });
+
+  // A3: tech CANNOT update their own WO's approval_status within grace
+  // (the grace policy lets them update other fields, but the trigger blocks
+  //  approval-column changes)
+  await withTx(c, async () => {
+    await c.query(`UPDATE public.users SET role='tech' WHERE id=$1`, [adminId]);
+    await setJwtClaims(c, adminId);
+    const ins = await c.query(
+      `INSERT INTO public.work_orders (asset_unit_number, user_id, type, title, raw_input)
+       VALUES ('TEST-AG', $1, 'pm', 'self-approve attempt', 'x')
+       RETURNING id`,
+      [adminId],
+    );
+    const woId = ins.rows[0].id;
+    let blocked = false;
+    try {
+      await c.query(
+        `UPDATE public.work_orders SET approval_status='approved' WHERE id=$1`,
+        [woId],
+      );
+    } catch (e) {
+      blocked = /admin/i.test(e.message);
+    }
+    record('tech blocked from approving own WO within grace window', blocked);
+  });
+
+  // A4: admin CAN set approval_status to approved
+  await withTx(c, async () => {
+    // Setup as superuser (bypasses RLS): tech inserts WO, then we flip
+    // role to admin for the approval action.
+    await c.query('RESET ROLE');
+    await c.query(`UPDATE public.users SET role='tech' WHERE id=$1`, [adminId]);
+    await setJwtClaims(c, adminId);
+    const ins = await c.query(
+      `INSERT INTO public.work_orders (asset_unit_number, user_id, type, title, raw_input)
+       VALUES ('TEST-AG', $1, 'pm', 'approveable', 'x')
+       RETURNING id`,
+      [adminId],
+    );
+    const woId = ins.rows[0].id;
+    // Promote to admin (superuser bypasses self-update RLS)
+    await c.query('RESET ROLE');
+    await c.query(`UPDATE public.users SET role='admin' WHERE id=$1`, [adminId]);
+    await setJwtClaims(c, adminId); // re-acquire authenticated role w/ admin
+    let ok = false;
+    try {
+      const r = await c.query(
+        `UPDATE public.work_orders
+         SET approval_status='approved', approved_at=now(), approved_by=$2
+         WHERE id=$1
+         RETURNING approval_status`,
+        [woId, adminId],
+      );
+      ok = r.rows[0]?.approval_status === 'approved';
+    } catch (e) {
+      ok = false;
+    }
+    record('admin can approve a pending_review WO', ok);
+  });
+
+  // A5: bad enum value rejected
+  await withTx(c, async () => {
+    await c.query('RESET ROLE');
+    await c.query(`UPDATE public.users SET role='admin' WHERE id=$1`, [adminId]);
+    await setJwtClaims(c, adminId);
+    let blocked = false;
+    try {
+      await c.query(
+        `INSERT INTO public.work_orders (asset_unit_number, user_id, type, title, raw_input, approval_status)
+         VALUES ('TEST-AG', $1, 'pm', 'bad', 'x', 'maybe')`,
+        [adminId],
+      );
+    } catch (e) {
+      blocked = e.code === '23514';
+    }
+    record('approval_status rejects bad enum value', blocked);
+  });
+
+  // ============================================================
   const passed = results.filter((r) => r.ok).length;
   const failed = results.length - passed;
   console.log(`\nTotal: ${results.length}  Passed: ${passed}  Failed: ${failed}`);
