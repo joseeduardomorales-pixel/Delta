@@ -16,12 +16,17 @@ import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { createMessage } from '../services/anthropic.js';
 import { getSupabaseAdmin } from '../services/supabaseAdmin.js';
-import { attachStagingToWorkOrder } from '../services/storage.js';
+import { attachStagingToWorkOrder, signedReadUrl } from '../services/storage.js';
 import { logger } from '../logger.js';
 import {
   toolDefinitionsForClaude,
   dispatchTool,
 } from '../tools/index.js';
+
+// How long a signed image URL stays valid when passed to Claude as an
+// image content block. Claude fetches it server-side once on receipt;
+// 5 minutes gives plenty of headroom.
+const IMAGE_URL_TTL_S = 300;
 
 const MAX_TOOL_ITERATIONS = 6;
 const HISTORY_LIMIT = 20; // last N messages of context per turn
@@ -58,6 +63,14 @@ function buildSystemPrompt({ profile }) {
     '- Be brief. One short paragraph per turn unless the user asks for detail.',
     '- Never invent unit numbers. If a unit doesn\'t exist, say so and offer',
     '  the closest matches from list_assets.',
+    '',
+    'Photos:',
+    '- When the user attaches photos, you see them as image blocks alongside',
+    '  the text. Use what you see to inform the work order — read panel',
+    '  labels, identify the failure (leak, broken latch, damaged tire,',
+    '  loose hose, etc.), and include that detail in `description` and',
+    '  `parsed_data`. Always still ask for / confirm the unit number from',
+    '  the user; do not infer it from a photo.',
   ].join('\n');
 }
 
@@ -80,6 +93,31 @@ async function loadOrCreateConversation({ admin, userId, conversationId }) {
   return data.id;
 }
 
+// Image blocks from prior turns have signed URLs that expire after 5
+// minutes. Strip them on replay so we don't send a 403'd URL to Claude.
+// Claude can still reason about "the photo you uploaded earlier" via
+// the description it generated at the time.
+function stripExpiredImages(content) {
+  if (!Array.isArray(content)) return content;
+  let imageCount = 0;
+  const cleaned = content
+    .map((block) => {
+      if (block?.type === 'image') {
+        imageCount += 1;
+        return null;
+      }
+      return block;
+    })
+    .filter(Boolean);
+  if (imageCount > 0) {
+    cleaned.push({
+      type: 'text',
+      text: `[${imageCount} photo${imageCount === 1 ? '' : 's'} attached in this earlier turn]`,
+    });
+  }
+  return cleaned;
+}
+
 async function loadHistory({ admin, conversationId, limit = HISTORY_LIMIT }) {
   const { data, error } = await admin
     .from('messages')
@@ -89,12 +127,13 @@ async function loadHistory({ admin, conversationId, limit = HISTORY_LIMIT }) {
     .limit(limit);
   if (error) throw new Error(error.message);
   // Convert stored {role, content} rows back into Anthropic message format.
-  // We store role='tool' for tool-result rows but Anthropic only accepts
-  // 'user' | 'assistant'. Tool results are valid content blocks inside a
-  // user-role message, so we remap on the way out.
+  // - role='tool' rows must be remapped to 'user' (tool_result blocks
+  //   only ride inside user messages per Anthropic's spec).
+  // - image blocks from old turns get stripped because their signed URLs
+  //   have expired.
   return data.map((m) => ({
     role: m.role === 'tool' ? 'user' : m.role,
-    content: m.content,
+    content: stripExpiredImages(m.content),
   }));
 }
 
@@ -147,13 +186,25 @@ async function handleChat(req, res) {
   });
 
   // Persist the user's message before anything else — never lose input.
-  // Photos are NOT inlined as image blocks in Phase 3a (vision lands in 3b);
-  // instead we tell Claude in plain text how many were attached.
-  const userText =
-    attachmentList.length > 0
-      ? `${message}\n\n[${attachmentList.length} photo${attachmentList.length === 1 ? '' : 's'} attached]`
-      : message;
-  const userContent = [{ type: 'text', text: userText }];
+  // For attachments, build Claude image blocks via short-lived signed URLs.
+  // Storage is RLS-private, so URLs must be signed to be fetchable by
+  // Anthropic's server.
+  const userContent = [{ type: 'text', text: message }];
+  for (const a of attachmentList) {
+    try {
+      const url = await signedReadUrl(a.staging_path, IMAGE_URL_TTL_S);
+      userContent.push({ type: 'image', source: { type: 'url', url } });
+    } catch (e) {
+      logger.warn(
+        { err: e.message, path: a.staging_path },
+        'chat: failed to sign image URL — attaching as text reference instead',
+      );
+      userContent.push({
+        type: 'text',
+        text: `[photo attached but unreadable: ${a.staging_path.split('/').pop()}]`,
+      });
+    }
+  }
   await persistMessage({
     admin,
     conversationId,
