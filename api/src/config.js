@@ -1,5 +1,18 @@
 // Centralized env access. Load dotenv ONCE here, before anything else.
-import 'dotenv/config';
+//
+// `override: true` is intentional. The auto-import `import 'dotenv/config'`
+// uses override:false, which means any shell env (including empty strings
+// like ANTHROPIC_API_KEY="" set by other tools) shadows our local .env
+// values. Override here so the developer's .env always wins in development.
+// In production, Render injects directly into process.env and no .env file
+// is present, so this flag has no effect.
+import * as dotenv from 'dotenv';
+dotenv.config({ override: true });
+
+// Treat empty-string env vars the same as unset.
+for (const k of Object.keys(process.env)) {
+  if (process.env[k] === '') delete process.env[k];
+}
 
 function required(name) {
   const value = process.env[name];
