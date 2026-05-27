@@ -12,6 +12,7 @@ import { uploadsRouter } from './routes/uploads.js';
 import { assetsRouter } from './routes/assets.js';
 import { adminWorkOrdersRouter } from './routes/admin_work_orders.js';
 import { adminUsersRouter } from './routes/admin_users.js';
+import { adminPmSchedulesRouter } from './routes/admin_pm_schedules.js';
 
 export function createApp() {
   const app = express();
@@ -42,6 +43,7 @@ export function createApp() {
   app.use(assetsRouter);
   app.use(adminWorkOrdersRouter);
   app.use(adminUsersRouter);
+  app.use(adminPmSchedulesRouter);
 
   // 404 — explicit, logged.
   app.use((req, res) => {

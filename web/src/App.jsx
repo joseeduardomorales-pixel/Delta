@@ -7,6 +7,7 @@ import Chat from './routes/Chat.jsx';
 import AssetHistory from './routes/AssetHistory.jsx';
 import ReviewQueue from './routes/admin/ReviewQueue.jsx';
 import Users from './routes/admin/Users.jsx';
+import PmSchedules from './routes/admin/PmSchedules.jsx';
 
 export default function App() {
   return (
@@ -44,6 +45,14 @@ export default function App() {
               element={
                 <RequireAuth requireRole="admin">
                   <Users />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/admin/pm-schedules"
+              element={
+                <RequireAuth requireRole="admin">
+                  <PmSchedules />
                 </RequireAuth>
               }
             />
