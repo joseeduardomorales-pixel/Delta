@@ -49,8 +49,10 @@ function buildSystemPrompt({ profile }) {
     '- When a tech reports a PROBLEM that hasn\'t been fixed yet, log it with',
     '  type="issue" (status defaults to open).',
     '- If the user says "undo", "scratch that", or "wrong truck" right after',
-    '  a work order was logged, call void_work_order with the short_id from',
-    '  the previous confirmation.',
+    '  a work order was logged, call void_work_order with NO ARGUMENTS — it',
+    '  defaults to voiding the user\'s most recent WO within the 5-min',
+    '  grace window. Only pass work_order_short_id if the user explicitly',
+    '  refers to an older WO by its short id.',
     '- All work orders land in approval_status="pending_review" until an admin',
     '  signs off. Tell the user this is normal; they don\'t need to do anything.',
     '- Be brief. One short paragraph per turn unless the user asks for detail.',
@@ -87,7 +89,13 @@ async function loadHistory({ admin, conversationId, limit = HISTORY_LIMIT }) {
     .limit(limit);
   if (error) throw new Error(error.message);
   // Convert stored {role, content} rows back into Anthropic message format.
-  return data.map((m) => ({ role: m.role, content: m.content }));
+  // We store role='tool' for tool-result rows but Anthropic only accepts
+  // 'user' | 'assistant'. Tool results are valid content blocks inside a
+  // user-role message, so we remap on the way out.
+  return data.map((m) => ({
+    role: m.role === 'tool' ? 'user' : m.role,
+    content: m.content,
+  }));
 }
 
 async function persistMessage({ admin, conversationId, role, content, toolCalls, workOrderId }) {
@@ -107,6 +115,20 @@ async function persistMessage({ admin, conversationId, role, content, toolCalls,
 }
 
 chatRouter.post('/api/chat', requireAuth, async (req, res) => {
+  try {
+    await handleChat(req, res);
+  } catch (e) {
+    logger.error(
+      { err: e.message, stack: e.stack, userId: req.user?.id },
+      'chat: unhandled error',
+    );
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'chat_failed', detail: e.message });
+    }
+  }
+});
+
+async function handleChat(req, res) {
   const {
     message,
     conversationId: incomingConvoId,
@@ -242,4 +264,4 @@ chatRouter.post('/api/chat', requireAuth, async (req, res) => {
     createdWorkOrders,
     attachedPhotos,
   });
-});
+}
