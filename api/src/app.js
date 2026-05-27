@@ -10,6 +10,7 @@ import { meRouter } from './routes/me.js';
 import { chatRouter } from './routes/chat.js';
 import { uploadsRouter } from './routes/uploads.js';
 import { assetsRouter } from './routes/assets.js';
+import { workOrdersRouter } from './routes/work_orders.js';
 import { adminWorkOrdersRouter } from './routes/admin_work_orders.js';
 import { adminUsersRouter } from './routes/admin_users.js';
 import { adminPmSchedulesRouter } from './routes/admin_pm_schedules.js';
@@ -41,6 +42,7 @@ export function createApp() {
   app.use(chatRouter);
   app.use(uploadsRouter);
   app.use(assetsRouter);
+  app.use(workOrdersRouter);
   app.use(adminWorkOrdersRouter);
   app.use(adminUsersRouter);
   app.use(adminPmSchedulesRouter);

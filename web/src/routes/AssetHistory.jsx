@@ -10,6 +10,7 @@ import { useAuth } from '../auth/AuthProvider.jsx';
 import { API_URL } from '../lib/supabase.js';
 import { Header, Card, Badge, SectionLabel, Banner } from '../components/ui/index.js';
 import { cn } from '../lib/cn.js';
+import ReportIssueButton from '../components/ReportIssueButton.jsx';
 
 const easeOut = [0.16, 1, 0.3, 1];
 
@@ -182,20 +183,38 @@ export default function AssetHistory() {
             <ChevronLeft size={14} />
             <span className="uppercase tracking-widest">Back to chat</span>
           </Link>
-          <h1 className="mt-2 font-display text-3xl md:text-4xl tracking-tight leading-tight">
-            {unit.toUpperCase()}
-          </h1>
-          {asset && (
-            <p className="mt-1 text-sm text-muted-foreground">
-              {asset.year} {asset.make} {asset.model}
-              {asset.vin && (
-                <>
-                  <span className="mx-2">·</span>
-                  <span className="font-mono text-[12px]">VIN {asset.vin}</span>
-                </>
+          <div className="flex items-start justify-between gap-3 flex-wrap mt-2">
+            <div className="min-w-0">
+              <h1 className="font-display text-3xl md:text-4xl tracking-tight leading-tight">
+                {unit.toUpperCase()}
+              </h1>
+              {asset && (
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {asset.year} {asset.make} {asset.model}
+                  {asset.vin && (
+                    <>
+                      <span className="mx-2">·</span>
+                      <span className="font-mono text-[12px]">VIN {asset.vin}</span>
+                    </>
+                  )}
+                </p>
               )}
-            </p>
-          )}
+            </div>
+            <ReportIssueButton
+              lockedAsset={unit.toUpperCase()}
+              variant="compact"
+              onSubmitted={() => {
+                // Refresh the list so the new pending issue shows up
+                setData(null);
+                setLoading(true);
+                setErr(null);
+                // Trigger the effect by changing the URL? — simpler: reload via fetch.
+                // Easiest is to bounce loading state and let the effect re-run on session change.
+                // For now: just push the user toward visible feedback.
+                window.location.reload();
+              }}
+            />
+          </div>
         </motion.div>
 
         {loading && (

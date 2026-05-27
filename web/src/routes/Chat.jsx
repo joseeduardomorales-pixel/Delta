@@ -8,6 +8,7 @@ import { API_URL } from '../lib/supabase.js';
 import { Header, useToast } from '../components/ui/index.js';
 import MessageList from '../components/MessageList.jsx';
 import MessageInput from '../components/MessageInput.jsx';
+import ReportIssueButton from '../components/ReportIssueButton.jsx';
 
 export default function Chat() {
   const { session, profile, signOut } = useAuth();
@@ -86,6 +87,18 @@ export default function Chat() {
     }
   }
 
+  function onIssueSubmitted(wo) {
+    // Surface the new issue in the chat thread as a system message so
+    // there's a visible trail without polluting the conversation.
+    setMessages((m) => [
+      ...m,
+      {
+        role: 'system',
+        text: `Issue logged: WO-${wo.short_id} on ${wo.asset_unit_number}.`,
+      },
+    ]);
+  }
+
   return (
     <div className="flex flex-col h-screen bg-background">
       <Header
@@ -94,6 +107,13 @@ export default function Chat() {
         context={profile?.role === 'admin' ? 'Chat · admin view' : 'Chat'}
         sticky
       />
+      {/* Quick-actions row — primary non-chat entry point */}
+      <div className="border-b border-border bg-card/50 px-3 py-2 flex items-center justify-between gap-2">
+        <p className="text-[11px] uppercase tracking-widest text-muted-foreground">
+          Quick actions
+        </p>
+        <ReportIssueButton onSubmitted={onIssueSubmitted} variant="compact" />
+      </div>
       <MessageList messages={messages} pending={pending} />
       <MessageInput
         onSend={handleSend}
