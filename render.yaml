@@ -1,0 +1,116 @@
+# Delta — Render Blueprint
+# ------------------------
+# Defines both services Delta needs in production:
+#   1. delta-api    Node web service (Express) for /api/*
+#   2. delta-web    Static site for the React PWA
+#
+# To use:
+#   1. Push this repo to GitHub.
+#   2. In Render dashboard: New → Blueprint → connect GitHub repo
+#      → it auto-detects render.yaml.
+#   3. Render asks for the `sync: false` env vars (the secrets).
+#      Paste them from ~/delta/api/.env.
+#   4. Both services build + deploy on every push to `main`.
+#
+# Custom domain delta.coldcargo.us:
+#   After first successful deploy, in delta-web settings → Custom Domains
+#   → add delta.coldcargo.us. Render gives you a CNAME target to add
+#   at the coldcargo.us registrar.
+
+services:
+  # --- API ----------------------------------------------------------------
+  - type: web
+    name: delta-api
+    runtime: node
+    plan: starter        # ~$7/mo. Free tier sleeps after 15 min idle —
+                         # bad UX for chat; pay for always-on.
+    region: oregon       # closest US region; Supabase project is us-east-1
+                         # but the cross-region hop is ~80ms — acceptable.
+    rootDir: api
+    buildCommand: npm install --omit=dev=false
+    startCommand: node src/server.js
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000     # Render's convention; the app reads process.env.PORT
+      # CORS allowlist — set to the delta-web URL after first deploy,
+      # then update to delta.coldcargo.us once DNS is live.
+      - key: FRONTEND_ORIGIN
+        sync: false
+
+      # Supabase (same project as dev for now per PM)
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+
+      # Anthropic
+      - key: ANTHROPIC_API_KEY
+        sync: false
+
+      # Intangles (US region)
+      - key: INTANGLES_VENDOR_ACCESS_TOKEN
+        sync: false
+      - key: INTANGLES_BASE_URL
+        value: https://indium-apis.intangles-aws-us-east-1.intangles.us
+
+      # Alvys
+      - key: ALVYS_CLIENT_ID
+        sync: false
+      - key: ALVYS_CLIENT_SECRET
+        sync: false
+
+      # TrackFleet
+      - key: TRACKFLEET_USERCODE
+        sync: false
+      - key: TRACKFLEET_USERNAME
+        sync: false
+      - key: TRACKFLEET_PASSWORD
+        sync: false
+
+  # --- WEB (static site) --------------------------------------------------
+  - type: web
+    name: delta-web
+    runtime: static
+    rootDir: web
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    autoDeploy: true
+    # SPA routing — every unknown path falls back to index.html so
+    # React Router can handle it client-side.
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    # Cache headers: long for assets (content-hashed), short for HTML.
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+      - path: /index.html
+        name: Cache-Control
+        value: no-cache
+    envVars:
+      # Vite bakes VITE_* vars into the JS bundle at build time.
+      # These MUST be set BEFORE the first build runs.
+      - key: VITE_SUPABASE_URL
+        sync: false
+      - key: VITE_SUPABASE_ANON_KEY
+        sync: false
+      # Set to delta-api's URL after it's deployed.
+      # Initially: https://delta-api.onrender.com
+      # After DNS: still https://delta-api.onrender.com (the API
+      # doesn't need a custom domain; only the web does)
+      - key: VITE_API_URL
+        sync: false
