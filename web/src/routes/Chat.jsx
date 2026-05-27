@@ -14,9 +14,16 @@ export default function Chat() {
   const [conversationId, setConversationId] = useState(null);
   const [bannerError, setBannerError] = useState(null);
 
-  async function handleSend(text) {
+  async function handleSend({ text, attachments }) {
     // Append the user's message immediately (optimistic).
-    setMessages((m) => [...m, { role: 'user', text }]);
+    const photoNote =
+      attachments?.length > 0
+        ? ` (📎 ${attachments.length} photo${attachments.length === 1 ? '' : 's'})`
+        : '';
+    setMessages((m) => [
+      ...m,
+      { role: 'user', text: (text || '(photo only)') + photoNote },
+    ]);
     setPending(true);
     setBannerError(null);
 
@@ -27,7 +34,11 @@ export default function Chat() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify({ conversationId, message: text }),
+        body: JSON.stringify({
+          conversationId,
+          message: text || 'See attached photo(s).',
+          attachments,
+        }),
       });
 
       if (!res.ok) {
@@ -107,7 +118,11 @@ export default function Chat() {
 
       <MessageList messages={messages} pending={pending} />
 
-      <MessageInput onSend={handleSend} disabled={pending} />
+      <MessageInput
+        onSend={handleSend}
+        disabled={pending}
+        accessToken={session.access_token}
+      />
     </div>
   );
 }

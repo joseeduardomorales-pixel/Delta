@@ -16,6 +16,7 @@ import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { createMessage } from '../services/anthropic.js';
 import { getSupabaseAdmin } from '../services/supabaseAdmin.js';
+import { attachStagingToWorkOrder } from '../services/storage.js';
 import { logger } from '../logger.js';
 import {
   toolDefinitionsForClaude,
@@ -106,10 +107,15 @@ async function persistMessage({ admin, conversationId, role, content, toolCalls,
 }
 
 chatRouter.post('/api/chat', requireAuth, async (req, res) => {
-  const { message, conversationId: incomingConvoId } = req.body || {};
+  const {
+    message,
+    conversationId: incomingConvoId,
+    attachments, // [{ staging_path, mimetype, size }]
+  } = req.body || {};
   if (typeof message !== 'string' || !message.trim()) {
     return res.status(400).json({ error: 'message_required' });
   }
+  const attachmentList = Array.isArray(attachments) ? attachments : [];
 
   const admin = getSupabaseAdmin();
   const conversationId = await loadOrCreateConversation({
@@ -119,7 +125,13 @@ chatRouter.post('/api/chat', requireAuth, async (req, res) => {
   });
 
   // Persist the user's message before anything else — never lose input.
-  const userContent = [{ type: 'text', text: message }];
+  // Photos are NOT inlined as image blocks in Phase 3a (vision lands in 3b);
+  // instead we tell Claude in plain text how many were attached.
+  const userText =
+    attachmentList.length > 0
+      ? `${message}\n\n[${attachmentList.length} photo${attachmentList.length === 1 ? '' : 's'} attached]`
+      : message;
+  const userContent = [{ type: 'text', text: userText }];
   await persistMessage({
     admin,
     conversationId,
@@ -201,9 +213,33 @@ chatRouter.post('/api/chat', requireAuth, async (req, res) => {
     messages = [...messages, toolResultMessage];
   }
 
+  // After the tool-use loop: if attachments were sent AND we created at
+  // least one work_order, link the photos to the FIRST created WO.
+  // (Future: let Claude assign each photo to a specific WO via a tool.)
+  const attachedPhotos = [];
+  if (attachmentList.length > 0 && createdWorkOrders.length > 0) {
+    const targetWoId = createdWorkOrders[0].id;
+    for (const a of attachmentList) {
+      try {
+        const photo = await attachStagingToWorkOrder({
+          stagingPath: a.staging_path,
+          workOrderId: targetWoId,
+          uploadedBy: req.user.id,
+        });
+        attachedPhotos.push({ id: photo.id, storage_path: photo.storage_path });
+      } catch (e) {
+        logger.warn(
+          { err: e.message, staging_path: a.staging_path },
+          'chat: failed to attach staging photo to WO',
+        );
+      }
+    }
+  }
+
   res.json({
     conversationId,
     assistantText,
     createdWorkOrders,
+    attachedPhotos,
   });
 });
