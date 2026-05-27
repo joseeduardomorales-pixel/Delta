@@ -301,12 +301,30 @@ PM/admin uses a separate, desktop-friendly surface at /admin/* for
 managing users, defining PM schedules, and reviewing the per-asset
 work-order history (the kardex view).
 
-DESIGN LANGUAGE (locked, do not redesign):
-  - Pure black background (#000000)
-  - Neon green primary accent (#00FF41)
-  - JetBrains Mono typography
-  - Matrix / terminal aesthetic
-  - lucide-react icons (v0.474.0)
+DESIGN LANGUAGE (v2 — Minimalist Modern, PM-approved 2026-05-27):
+  - Canvas: #FAFAFA warm off-white background; #FFFFFF card surfaces
+  - Foreground: #0F172A Slate-900
+  - Primary accent: Electric Blue gradient #0052FF → #4D7CFF
+  - Semantic palette: success #16A34A, warning #F59E0B, danger #DC2626,
+    info #0EA5E9
+  - Typography (dual + mono):
+      Calistoga (display)  — h1/h2 only, the "personality" voice
+      Inter (UI + body)    — everything else, the "clarity" voice
+      JetBrains Mono       — section labels (uppercase tracked),
+                             identifiers (WO ids, VINs, code-like data)
+  - Tap target floor: 44×44 px
+  - Mobile-first breakpoints unchanged from Phase 1
+  - lucide-react icons (v0.474.0) for all UI iconography
+  - Full spec: docs/design-system-v2.md (authoritative)
+  - v1 (Matrix) archived: docs/archive/design-system-v1-matrix.md
+
+  Surface calibration:
+    /login          full showcase (gradient headline, rotating ring)
+    /admin/*        full system (motion, hover lifts, breathing)
+    /assets/:unit   mid (new tokens, subtle hover, no decorative motion)
+    /             chat: RESTRAINED — new palette/type/primitives, NO
+                  decorative motion (tech speed/density matters more
+                  than visual flourish on a phone in the shop)
 
 TECH STACK:
   Frontend: React + Vite, installable PWA (vite-plugin-pwa),
