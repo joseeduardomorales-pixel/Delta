@@ -1,12 +1,17 @@
 // /assets/:unit — per-asset work-order history (the kardex view).
-// Splits into Pending review / Approved / Rejected sections.
-// Photos render inline via short-lived signed URLs.
+// Mid-density v2 design: SectionLabels, Cards w/ hover lift, photo
+// thumbnails inline, status pills.
 
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
+import { motion } from 'framer-motion';
+import { ChevronLeft, ImageOff } from 'lucide-react';
 import { useAuth } from '../auth/AuthProvider.jsx';
 import { API_URL } from '../lib/supabase.js';
-import clsx from 'clsx';
+import { Header, Card, Badge, SectionLabel, Banner } from '../components/ui/index.js';
+import { cn } from '../lib/cn.js';
+
+const easeOut = [0.16, 1, 0.3, 1];
 
 function relativeTime(iso) {
   if (!iso) return '';
@@ -21,51 +26,48 @@ function relativeTime(iso) {
   return `${d}d ago`;
 }
 
-function StatusPill({ wo }) {
+function StatusPill({ status }) {
   const map = {
-    open: 'text-matrix-amber border-matrix-amber/50',
-    in_progress: 'text-matrix-amber border-matrix-amber/50',
-    completed: 'text-matrix-green border-matrix-green-line',
-    voided: 'text-matrix-fg-muted border-matrix-green-line line-through',
+    open: 'warning',
+    in_progress: 'warning',
+    completed: 'success',
+    voided: 'neutral',
   };
-  return (
-    <span
-      className={clsx(
-        'inline-block px-1.5 py-0.5 text-[9px] uppercase tracking-widest border rounded',
-        map[wo.status] || map.completed,
-      )}
-    >
-      {wo.status}
-    </span>
-  );
+  return <Badge tone={map[status] || 'neutral'}>{status.replace('_', ' ')}</Badge>;
 }
 
 function WorkOrderRow({ wo }) {
   return (
-    <li className="border border-matrix-green-line rounded-md p-3">
+    <Card interactive className="p-4">
       <div className="flex items-baseline justify-between gap-3">
-        <h3 className="text-sm text-matrix-green tracking-tight">
+        <h3 className="text-base font-semibold text-foreground leading-snug">
           {wo.title || '(no title)'}
         </h3>
-        <span className="text-[10px] text-matrix-fg-muted whitespace-nowrap">
+        <span className="text-xs text-muted-foreground whitespace-nowrap">
           {relativeTime(wo.started_at)}
         </span>
       </div>
-      <p className="mt-0.5 text-[10px] text-matrix-fg-muted">
-        WO-{wo.id.slice(0, 8)} · {wo.type} · {wo.user?.full_name || '?'}
+      <p className="mt-1 text-[11px] text-muted-foreground">
+        <span className="font-mono">WO-{wo.id.slice(0, 8)}</span>
+        <span className="mx-1.5">·</span>
+        {wo.type}
+        <span className="mx-1.5">·</span>
+        {wo.user?.full_name || '?'}
       </p>
+
       {wo.description && (
-        <p className="mt-2 text-xs text-matrix-fg whitespace-pre-wrap">
+        <p className="mt-3 text-sm text-foreground/85 whitespace-pre-wrap leading-relaxed">
           {wo.description}
         </p>
       )}
       {wo.raw_input && wo.raw_input !== wo.description && (
-        <p className="mt-2 text-[11px] text-matrix-fg-dim italic">
+        <p className="mt-2 text-[12px] text-muted-foreground italic leading-relaxed">
           "{wo.raw_input}"
         </p>
       )}
+
       {wo.action_photos?.length > 0 && (
-        <div className="mt-2 flex gap-2 overflow-x-auto">
+        <div className="mt-3 flex gap-2 overflow-x-auto">
           {wo.action_photos.map((p) =>
             p.url ? (
               <a
@@ -73,7 +75,10 @@ function WorkOrderRow({ wo }) {
                 href={p.url}
                 target="_blank"
                 rel="noreferrer"
-                className="shrink-0 w-20 h-20 rounded-md overflow-hidden border border-matrix-green-line"
+                className={cn(
+                  'shrink-0 h-20 w-20 rounded-lg overflow-hidden',
+                  'border border-border hover:border-accent/40 transition-colors',
+                )}
               >
                 <img
                   src={p.url}
@@ -82,33 +87,32 @@ function WorkOrderRow({ wo }) {
                   loading="lazy"
                 />
               </a>
-            ) : null,
+            ) : (
+              <div
+                key={p.id}
+                className="shrink-0 h-20 w-20 rounded-lg border border-border bg-muted flex items-center justify-center text-muted-foreground"
+              >
+                <ImageOff size={20} />
+              </div>
+            ),
           )}
         </div>
       )}
-      <div className="mt-2 flex items-center gap-2">
-        <StatusPill wo={wo} />
-        {wo.approval_status === 'rejected' && (
-          <span className="text-[9px] uppercase tracking-widest text-matrix-red border border-matrix-red/50 rounded px-1.5 py-0.5">
-            rejected
-          </span>
-        )}
+
+      <div className="mt-3 flex items-center gap-2">
+        <StatusPill status={wo.status} />
       </div>
-    </li>
+    </Card>
   );
 }
 
-function Section({ title, count, color, children }) {
+function Section({ title, tone, count, children }) {
   return (
-    <section className="mb-6">
-      <h2
-        className={clsx(
-          'text-xs uppercase tracking-widest mb-2',
-          color || 'text-matrix-fg-dim',
-        )}
-      >
-        {title} <span className="text-matrix-fg-muted">({count})</span>
-      </h2>
+    <section className="mb-8">
+      <div className="flex items-baseline gap-3 mb-3">
+        <SectionLabel tone={tone}>{title}</SectionLabel>
+        <span className="text-xs text-muted-foreground">({count})</span>
+      </div>
       {children}
     </section>
   );
@@ -116,7 +120,7 @@ function Section({ title, count, color, children }) {
 
 export default function AssetHistory() {
   const { unit } = useParams();
-  const { session, profile } = useAuth();
+  const { session, profile, signOut } = useAuth();
   const [asset, setAsset] = useState(null);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -156,80 +160,103 @@ export default function AssetHistory() {
   }, [unit, session.access_token]);
 
   return (
-    <main className="min-h-screen bg-matrix-black text-matrix-fg font-mono">
-      <header className="border-b border-matrix-green-line px-4 py-3 flex items-center justify-between">
-        <div>
-          <Link to="/" className="text-[10px] uppercase tracking-widest text-matrix-fg-dim hover:text-matrix-green">
-            ← Chat
+    <div className="min-h-screen bg-background">
+      <Header
+        profile={profile}
+        onSignOut={signOut}
+        context={asset ? `${asset.unit_number.toUpperCase()} · ${asset.type}` : unit.toUpperCase()}
+        sticky
+      />
+      <main className="mx-auto max-w-4xl px-4 py-6 md:py-10">
+        {/* Page title block */}
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, ease: easeOut }}
+          className="mb-8"
+        >
+          <Link
+            to="/"
+            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <ChevronLeft size={14} />
+            <span className="uppercase tracking-widest">Back to chat</span>
           </Link>
-          <h1 className="text-xl text-matrix-green tracking-tight mt-1">
+          <h1 className="mt-2 font-display text-3xl md:text-4xl tracking-tight leading-tight">
             {unit.toUpperCase()}
           </h1>
           {asset && (
-            <p className="text-[11px] text-matrix-fg-muted">
-              {asset.type} · {asset.year || ''} {asset.make || ''} {asset.model || ''}
-              {asset.vin ? ` · VIN ${asset.vin}` : ''}
+            <p className="mt-1 text-sm text-muted-foreground">
+              {asset.year} {asset.make} {asset.model}
+              {asset.vin && (
+                <>
+                  <span className="mx-2">·</span>
+                  <span className="font-mono text-[12px]">VIN {asset.vin}</span>
+                </>
+              )}
             </p>
           )}
-        </div>
-        <span className="text-[10px] text-matrix-fg-muted">
-          {profile?.fullName}
-        </span>
-      </header>
+        </motion.div>
 
-      <div className="px-4 py-5 max-w-3xl mx-auto">
-        {loading && <p className="text-sm text-matrix-fg-dim">Loading…</p>}
-        {err && <p className="text-sm text-matrix-red">Error: {err}</p>}
+        {loading && (
+          <p className="text-sm text-muted-foreground">Loading…</p>
+        )}
+        {err && (
+          <Banner tone="danger" title="Couldn't load asset history">
+            {err}
+          </Banner>
+        )}
+
         {!loading && !err && data && (
           <>
             <Section
               title="Pending review"
+              tone="warning"
               count={data.pending.length}
-              color="text-matrix-amber"
             >
               {data.pending.length === 0 ? (
-                <p className="text-[11px] text-matrix-fg-muted">None.</p>
+                <p className="text-sm text-muted-foreground">None.</p>
               ) : (
-                <ul className="space-y-2">
+                <div className="space-y-3">
                   {data.pending.map((w) => (
                     <WorkOrderRow key={w.id} wo={w} />
                   ))}
-                </ul>
+                </div>
               )}
             </Section>
 
             <Section
               title="Approved"
+              tone="success"
               count={data.approved.length}
-              color="text-matrix-green"
             >
               {data.approved.length === 0 ? (
-                <p className="text-[11px] text-matrix-fg-muted">None yet.</p>
+                <p className="text-sm text-muted-foreground">None yet.</p>
               ) : (
-                <ul className="space-y-2">
+                <div className="space-y-3">
                   {data.approved.map((w) => (
                     <WorkOrderRow key={w.id} wo={w} />
                   ))}
-                </ul>
+                </div>
               )}
             </Section>
 
             {data.rejected.length > 0 && (
               <Section
                 title="Rejected"
+                tone="danger"
                 count={data.rejected.length}
-                color="text-matrix-red"
               >
-                <ul className="space-y-2">
+                <div className="space-y-3">
                   {data.rejected.map((w) => (
                     <WorkOrderRow key={w.id} wo={w} />
                   ))}
-                </ul>
+                </div>
               </Section>
             )}
           </>
         )}
-      </div>
-    </main>
+      </main>
+    </div>
   );
 }

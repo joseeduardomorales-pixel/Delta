@@ -3,18 +3,16 @@
 // before send.
 
 import { X } from 'lucide-react';
-import clsx from 'clsx';
+import { cn } from '../lib/cn.js';
 
 function StatusDot({ status }) {
-  if (status === 'uploaded')
-    return <span className="absolute bottom-1 right-1 w-2 h-2 rounded-full bg-matrix-green" />;
-  if (status === 'uploading')
-    return (
-      <span className="absolute bottom-1 right-1 w-2 h-2 rounded-full bg-matrix-amber animate-pulse" />
-    );
-  if (status === 'failed')
-    return <span className="absolute bottom-1 right-1 w-2 h-2 rounded-full bg-matrix-red" />;
-  return null;
+  const map = {
+    uploaded: 'bg-success',
+    uploading: 'bg-warning animate-pulse-dot',
+    failed: 'bg-danger',
+  };
+  if (!map[status]) return null;
+  return <span className={cn('absolute bottom-1 right-1 h-2 w-2 rounded-full', map[status])} />;
 }
 
 export default function PhotoPreview({ photos, onRemove }) {
@@ -24,9 +22,9 @@ export default function PhotoPreview({ photos, onRemove }) {
       {photos.map((p) => (
         <div
           key={p.localId}
-          className={clsx(
-            'relative shrink-0 w-16 h-16 rounded-md overflow-hidden border',
-            p.status === 'failed' ? 'border-matrix-red' : 'border-matrix-green-line',
+          className={cn(
+            'relative shrink-0 h-16 w-16 rounded-lg overflow-hidden border bg-card',
+            p.status === 'failed' ? 'border-danger' : 'border-border',
           )}
         >
           <img
@@ -39,7 +37,7 @@ export default function PhotoPreview({ photos, onRemove }) {
             type="button"
             onClick={() => onRemove(p.localId)}
             aria-label="Remove photo"
-            className="absolute top-0.5 right-0.5 w-5 h-5 inline-flex items-center justify-center rounded-full bg-black/70 text-matrix-fg hover:text-matrix-red"
+            className="absolute top-0.5 right-0.5 h-5 w-5 inline-flex items-center justify-center rounded-full bg-foreground/70 text-background hover:bg-danger transition-colors"
           >
             <X size={12} />
           </button>

@@ -1,31 +1,31 @@
-// Delta — single-screen chat surface. Tech-facing primary UI.
+// Delta — chat surface (v2, restrained).
+// Tech-facing primary UI. New palette + type + primitives, NO
+// decorative motion — speed and density matter more than flourish.
 
 import { useState } from 'react';
 import { useAuth } from '../auth/AuthProvider.jsx';
 import { API_URL } from '../lib/supabase.js';
+import { Header, useToast } from '../components/ui/index.js';
 import MessageList from '../components/MessageList.jsx';
 import MessageInput from '../components/MessageInput.jsx';
-import { Link } from 'react-router-dom';
 
 export default function Chat() {
   const { session, profile, signOut } = useAuth();
+  const { push: pushToast } = useToast();
   const [messages, setMessages] = useState([]);
   const [pending, setPending] = useState(false);
   const [conversationId, setConversationId] = useState(null);
-  const [bannerError, setBannerError] = useState(null);
 
   async function handleSend({ text, attachments }) {
-    // Append the user's message immediately (optimistic).
     const photoNote =
       attachments?.length > 0
-        ? ` (📎 ${attachments.length} photo${attachments.length === 1 ? '' : 's'})`
+        ? ` (📎 ${attachments.length})`
         : '';
     setMessages((m) => [
       ...m,
       { role: 'user', text: (text || '(photo only)') + photoNote },
     ]);
     setPending(true);
-    setBannerError(null);
 
     try {
       const res = await fetch(`${API_URL}/api/chat`, {
@@ -47,11 +47,15 @@ export default function Chat() {
           ...m,
           {
             role: 'system',
-            text: `Delta couldn't process that (HTTP ${res.status}). Try again.`,
+            text: `Delta couldn't process that (${res.status}).`,
             error: true,
           },
         ]);
-        setBannerError(`API error: ${res.status} ${body.slice(0, 120)}`);
+        pushToast({
+          tone: 'danger',
+          title: 'API error',
+          text: `${res.status} ${body.slice(0, 120) || ''}`,
+        });
         return;
       }
 
@@ -72,52 +76,25 @@ export default function Chat() {
         ...m,
         {
           role: 'system',
-          text: 'Network problem. Your message wasn\'t sent.',
+          text: "Network problem. Your message wasn't sent.",
           error: true,
         },
       ]);
-      setBannerError(e.message);
+      pushToast({ tone: 'danger', title: 'Network problem', text: e.message });
     } finally {
       setPending(false);
     }
   }
 
   return (
-    <div className="flex flex-col h-screen bg-matrix-black text-matrix-fg font-mono">
-      <header className="flex items-center justify-between px-3 py-2 border-b border-matrix-green-line">
-        <div>
-          <h1 className="text-base text-matrix-green tracking-tight">Delta</h1>
-          <p className="text-[10px] text-matrix-fg-muted">
-            {profile?.fullName} · {profile?.role}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {profile?.role === 'admin' && (
-            <Link
-              to="/admin/work-orders/pending"
-              className="text-[10px] uppercase tracking-widest text-matrix-fg-dim hover:text-matrix-green px-2 py-1 border border-matrix-green-line rounded"
-            >
-              Review queue
-            </Link>
-          )}
-          <button
-            type="button"
-            onClick={signOut}
-            className="text-[10px] uppercase tracking-widest text-matrix-fg-dim hover:text-matrix-green px-2 py-1 border border-matrix-green-line rounded"
-          >
-            Sign out
-          </button>
-        </div>
-      </header>
-
-      {bannerError && (
-        <div className="bg-matrix-red/10 border-b border-matrix-red/40 text-matrix-red text-xs px-3 py-1">
-          {bannerError}
-        </div>
-      )}
-
+    <div className="flex flex-col h-screen bg-background">
+      <Header
+        profile={profile}
+        onSignOut={signOut}
+        context={profile?.role === 'admin' ? 'Chat · admin view' : 'Chat'}
+        sticky
+      />
       <MessageList messages={messages} pending={pending} />
-
       <MessageInput
         onSend={handleSend}
         disabled={pending}

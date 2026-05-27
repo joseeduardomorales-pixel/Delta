@@ -1,22 +1,28 @@
-// A single chat message. Role determines style and side.
-//  - user:      right-aligned, green border
-//  - assistant: left-aligned, green text on near-black bg
-//  - system:    centered, muted (status notices, undo hints)
+// Delta — chat message bubble (v2 design).
+// Role styling per the design system:
+//   user       right-aligned, accent-tinted card
+//   assistant  left-aligned, plain card with subtle shadow
+//   system     centered muted line (status notices)
 
-import clsx from 'clsx';
+import { Badge } from './ui/index.js';
+import { cn } from '../lib/cn.js';
 
 function WOBadge({ wo }) {
   return (
-    <span className="inline-block px-2 py-0.5 mr-2 mb-1 text-[10px] uppercase tracking-wider border border-matrix-green-line text-matrix-green rounded">
-      WO-{wo.short_id} · {wo.asset_unit_number} · pending review
-    </span>
+    <Badge tone="accent" className="mr-1.5 mt-1.5">
+      <span className="font-mono">WO-{wo.short_id}</span>
+      <span aria-hidden className="opacity-50">·</span>
+      <span>{wo.asset_unit_number}</span>
+      <span aria-hidden className="opacity-50">·</span>
+      <span>pending</span>
+    </Badge>
   );
 }
 
 export default function MessageBubble({ role, text, workOrders, error }) {
   if (role === 'system') {
     return (
-      <div className="text-center text-xs text-matrix-fg-muted py-2 px-4">
+      <div className="text-center text-xs text-muted-foreground py-1.5 px-4">
         {text}
       </div>
     );
@@ -24,14 +30,14 @@ export default function MessageBubble({ role, text, workOrders, error }) {
 
   const isUser = role === 'user';
   return (
-    <div className={clsx('flex w-full', isUser ? 'justify-end' : 'justify-start')}>
+    <div className={cn('flex w-full', isUser ? 'justify-end' : 'justify-start')}>
       <div
-        className={clsx(
-          'max-w-[85%] sm:max-w-[75%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap break-words',
+        className={cn(
+          'max-w-[88%] sm:max-w-[80%] rounded-2xl px-3.5 py-2.5 text-sm whitespace-pre-wrap break-words leading-relaxed',
           isUser
-            ? 'bg-matrix-green-faint text-matrix-fg border border-matrix-green-line'
-            : 'bg-black text-matrix-green border border-matrix-green-line shadow-matrix-glow',
-          error && 'border-matrix-red text-matrix-red',
+            ? 'bg-accent text-accent-foreground rounded-br-sm'
+            : 'bg-card border border-border shadow-sm text-foreground rounded-bl-sm',
+          error && 'border-danger text-danger',
         )}
       >
         {text}

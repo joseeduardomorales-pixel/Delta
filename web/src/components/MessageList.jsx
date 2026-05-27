@@ -1,7 +1,10 @@
-// Vertical message thread. Auto-scrolls to bottom on new messages.
+// Vertical chat thread. Auto-scrolls to bottom on new messages.
+// Restrained motion per v2 design (no decorative entrance animations
+// on the chat surface).
 
 import { useEffect, useRef } from 'react';
 import MessageBubble from './MessageBubble.jsx';
+import { SectionLabel } from './ui/index.js';
 
 export default function MessageList({ messages, pending }) {
   const endRef = useRef(null);
@@ -13,12 +16,18 @@ export default function MessageList({ messages, pending }) {
   if (messages.length === 0 && !pending) {
     return (
       <div className="flex-1 flex items-center justify-center px-6">
-        <div className="text-center text-matrix-fg-muted text-sm max-w-sm">
-          <p className="text-matrix-green mb-2">Delta is listening.</p>
-          <p className="text-xs">
-            Tell it what you did, or ask about an asset.
-            <br />
-            E.g. <span className="text-matrix-fg-dim">"Oil change on CC07 today"</span>
+        <div className="text-center max-w-sm">
+          <SectionLabel tone="accent" pulse>
+            Listening
+          </SectionLabel>
+          <p className="mt-4 text-base font-display tracking-tight">
+            Tell <span className="text-gradient">Delta</span> what you did,
+          </p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            or ask about an asset.
+          </p>
+          <p className="mt-4 text-xs text-muted-foreground/70">
+            e.g. <span className="font-mono text-foreground/70">"Oil change on CC07 today"</span>
           </p>
         </div>
       </div>
@@ -26,7 +35,7 @@ export default function MessageList({ messages, pending }) {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto px-3 py-4 space-y-3">
+    <div className="flex-1 overflow-y-auto px-3 py-4 space-y-2.5">
       {messages.map((m, i) => (
         <MessageBubble
           key={i}
@@ -38,8 +47,9 @@ export default function MessageList({ messages, pending }) {
       ))}
       {pending && (
         <div className="flex justify-start">
-          <div className="px-3 py-2 text-xs text-matrix-fg-dim animate-pulse">
-            Delta is thinking…
+          <div className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-2xl bg-muted text-muted-foreground">
+            <span className="h-1.5 w-1.5 rounded-full bg-accent animate-pulse-dot" />
+            <span className="text-xs font-mono uppercase tracking-widest">thinking</span>
           </div>
         </div>
       )}
