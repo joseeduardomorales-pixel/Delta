@@ -1,42 +1,76 @@
-/* Delta — Matrix design tokens
- * UI Developer persona. Locked design language; do not redesign.
- * Pure black + neon green + JetBrains Mono, mobile-first, ≥44px taps.
- */
+/* Delta — Minimalist Modern (v2) design tokens.
+ * See docs/design-system-v2.md for the authoritative spec.
+ * v1 (Matrix) archived; do not reintroduce. */
 
 :root {
-  /* Matrix palette */
-  --matrix-black: #000000;
-  --matrix-green: #00FF41;
-  --matrix-green-dim: #00B82E;
-  --matrix-green-faint: rgba(0, 255, 65, 0.12);
-  --matrix-green-line: rgba(0, 255, 65, 0.25);
-  --matrix-red: #FF3B3B;
-  --matrix-amber: #FFB300;
-  --matrix-fg: #E6FFEC;
-  --matrix-fg-dim: #8FBFA0;
-  --matrix-fg-muted: #4A6B53;
+  /* ── surfaces ─────────────────────────────────────────────────── */
+  --background:        #FAFAFA;          /* warm off-white page bg */
+  --card:              #FFFFFF;          /* elevated surfaces */
+  --foreground:        #0F172A;          /* slate-900, primary text */
+  --muted:             #F1F5F9;          /* slate-100 */
+  --muted-foreground:  #64748B;          /* slate-500 */
+  --border:            #E2E8F0;          /* slate-200 */
 
-  /* Typography */
-  --font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular',
-               Menlo, Consolas, monospace;
+  /* ── accent (the signature) ───────────────────────────────────── */
+  --accent:            #0052FF;          /* Electric Blue */
+  --accent-secondary:  #4D7CFF;          /* gradient endpoint */
+  --accent-foreground: #FFFFFF;
+  --ring:              #0052FF;
 
-  /* Layout */
-  --tap-target: 44px;
-  --radius-sm: 4px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
+  --accent-bg:         rgba(0, 82, 255, 0.05);
+  --accent-bg-strong:  rgba(0, 82, 255, 0.10);
+  --accent-border:     rgba(0, 82, 255, 0.30);
 
-  /* Motion */
-  --transition-fast: 120ms ease-out;
-  --transition-base: 200ms ease-out;
+  /* ── semantic ─────────────────────────────────────────────────── */
+  --success:           #16A34A;
+  --warning:           #F59E0B;
+  --danger:            #DC2626;
+  --info:              #0EA5E9;
 
-  color-scheme: dark;
+  --success-bg:        rgba(22, 163, 74, 0.08);
+  --warning-bg:        rgba(245, 158, 11, 0.10);
+  --danger-bg:         rgba(220, 38, 38, 0.08);
+  --info-bg:           rgba(14, 165, 233, 0.08);
+
+  /* ── shadow ladder ────────────────────────────────────────────── */
+  --shadow-sm:         0 1px 3px rgba(15, 23, 42, 0.06);
+  --shadow-md:         0 4px 6px rgba(15, 23, 42, 0.07), 0 2px 4px rgba(15, 23, 42, 0.04);
+  --shadow-lg:         0 10px 15px rgba(15, 23, 42, 0.08), 0 4px 6px rgba(15, 23, 42, 0.04);
+  --shadow-xl:         0 20px 25px rgba(15, 23, 42, 0.10), 0 10px 10px rgba(15, 23, 42, 0.04);
+  --shadow-accent:     0 4px 14px rgba(0, 82, 255, 0.25);
+  --shadow-accent-lg:  0 8px 24px rgba(0, 82, 255, 0.35);
+
+  /* ── motion ──────────────────────────────────────────────────── */
+  --duration-fast:     120ms;
+  --duration-base:     200ms;
+  --duration-slow:     400ms;
+  --ease-out:          cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* ── radii ───────────────────────────────────────────────────── */
+  --radius-sm:         4px;
+  --radius-md:         8px;
+  --radius-lg:         12px;
+  --radius-xl:         16px;
+  --radius-2xl:        20px;
+  --radius-full:       9999px;
+
+  /* ── typography ──────────────────────────────────────────────── */
+  --font-display:      'Calistoga', Georgia, 'Times New Roman', serif;
+  --font-sans:         'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono:         'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+
+  /* ── layout ──────────────────────────────────────────────────── */
+  --tap-target:        44px;
+
+  color-scheme: light;
 }
 
+/* ── base ──────────────────────────────────────────────────────── */
 html, body, #root {
-  background-color: var(--matrix-black);
-  color: var(--matrix-fg);
-  font-family: var(--font-mono);
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-feature-settings: 'cv11', 'ss01', 'kern';
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -48,17 +82,27 @@ body {
   min-height: 100dvh;
 }
 
-/* Disable hover-dependent styling on touch primary devices.
- * Foundation rule: no hover-dependent UI. */
+/* No hover on touch primary devices — Delta charter §6 */
 @media (hover: none) {
   *:hover { all: revert; }
 }
 
-::selection {
-  background: var(--matrix-green);
-  color: var(--matrix-black);
+/* Reduced motion: strip continuous animation, keep utility transitions */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0s !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0s !important;
+  }
 }
 
+/* Selection styled with accent */
+::selection {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+/* Sensible defaults on form elements */
 button, input, textarea, select {
   font-family: inherit;
   color: inherit;
@@ -66,5 +110,36 @@ button, input, textarea, select {
 
 button {
   min-height: var(--tap-target);
-  min-width: var(--tap-target);
+}
+
+input, textarea, select {
+  min-height: var(--tap-target);
+}
+
+/* ── utility: gradient text ───────────────────────────────────── */
+.text-gradient {
+  background: linear-gradient(to right, var(--accent), var(--accent-secondary));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  /* Avoid the focus-ring eating the gradient when the headline contains
+   * a link — apply -webkit-text-fill-color too. */
+  -webkit-text-fill-color: transparent;
+}
+
+/* ── utility: gradient border via 2px stroke trick ────────────── */
+.gradient-border {
+  background: linear-gradient(135deg, var(--accent), var(--accent-secondary));
+  padding: 2px;
+  border-radius: var(--radius-xl);
+}
+.gradient-border > * {
+  border-radius: calc(var(--radius-xl) - 2px);
+  background: var(--card);
+}
+
+/* ── decorative: subtle dot pattern (used on inverted sections) ─ */
+.dot-grid {
+  background-image: radial-gradient(circle, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 32px 32px;
 }

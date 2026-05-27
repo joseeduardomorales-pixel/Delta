@@ -1,42 +1,118 @@
 /** @type {import('tailwindcss').Config} */
-// Delta — Tailwind config (UI Developer cameo).
-// Matrix palette + JetBrains Mono. Mobile-first; tap targets >=44px.
+// Delta — Tailwind config, Minimalist Modern v2.
+// See docs/design-system-v2.md for the authoritative spec.
+
 export default {
   content: ['./index.html', './src/**/*.{js,jsx,ts,tsx}'],
   theme: {
     extend: {
       colors: {
-        matrix: {
-          black: '#000000',
-          green: '#00FF41',
-          'green-dim': '#00B82E',
-          'green-faint': 'rgba(0, 255, 65, 0.12)',
-          'green-line': 'rgba(0, 255, 65, 0.25)',
-          red: '#FF3B3B',
-          amber: '#FFB300',
-          fg: '#E6FFEC',
-          'fg-dim': '#8FBFA0',
-          'fg-muted': '#4A6B53',
+        background: 'var(--background)',
+        card: 'var(--card)',
+        foreground: 'var(--foreground)',
+        muted: {
+          DEFAULT: 'var(--muted)',
+          foreground: 'var(--muted-foreground)',
+        },
+        border: 'var(--border)',
+        ring: 'var(--ring)',
+        accent: {
+          DEFAULT: 'var(--accent)',
+          secondary: 'var(--accent-secondary)',
+          foreground: 'var(--accent-foreground)',
+          bg: 'var(--accent-bg)',
+          'bg-strong': 'var(--accent-bg-strong)',
+          border: 'var(--accent-border)',
+        },
+        success: {
+          DEFAULT: 'var(--success)',
+          bg: 'var(--success-bg)',
+        },
+        warning: {
+          DEFAULT: 'var(--warning)',
+          bg: 'var(--warning-bg)',
+        },
+        danger: {
+          DEFAULT: 'var(--danger)',
+          bg: 'var(--danger-bg)',
+        },
+        info: {
+          DEFAULT: 'var(--info)',
+          bg: 'var(--info-bg)',
         },
       },
       fontFamily: {
-        mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular',
-               'Menlo', 'Consolas', 'monospace'],
-        sans: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular',
-               'Menlo', 'Consolas', 'monospace'],
+        display: ['Calistoga', 'Georgia', 'Times New Roman', 'serif'],
+        sans: ['Inter', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
+        mono: [
+          'JetBrains Mono',
+          'ui-monospace',
+          'SFMono-Regular',
+          'Menlo',
+          'Consolas',
+          'monospace',
+        ],
       },
-      minHeight: { tap: '44px' },
-      minWidth: { tap: '44px' },
-      spacing: { tap: '44px' },
-      borderRadius: { sm: '4px', md: '8px', lg: '12px' },
+      fontSize: {
+        // Display sits between text-5xl and text-6xl — calibrated for Login hero.
+        display: [
+          '3rem',
+          { lineHeight: '1.05', letterSpacing: '-0.02em', fontWeight: '400' },
+        ],
+      },
+      minHeight: { tap: 'var(--tap-target)' },
+      minWidth: { tap: 'var(--tap-target)' },
+      spacing: { tap: 'var(--tap-target)' },
+      borderRadius: {
+        sm: 'var(--radius-sm)',
+        DEFAULT: 'var(--radius-md)',
+        md: 'var(--radius-md)',
+        lg: 'var(--radius-lg)',
+        xl: 'var(--radius-xl)',
+        '2xl': 'var(--radius-2xl)',
+      },
       boxShadow: {
-        'matrix-glow': '0 0 12px rgba(0, 255, 65, 0.35)',
-        'matrix-glow-strong': '0 0 24px rgba(0, 255, 65, 0.55)',
+        sm: 'var(--shadow-sm)',
+        DEFAULT: 'var(--shadow-md)',
+        md: 'var(--shadow-md)',
+        lg: 'var(--shadow-lg)',
+        xl: 'var(--shadow-xl)',
+        accent: 'var(--shadow-accent)',
+        'accent-lg': 'var(--shadow-accent-lg)',
       },
-      transitionDuration: { fast: '120ms', base: '200ms' },
+      transitionDuration: {
+        fast: '120ms',
+        base: '200ms',
+        slow: '400ms',
+      },
+      transitionTimingFunction: {
+        'ease-out-soft': 'cubic-bezier(0.16, 1, 0.3, 1)',
+      },
+      backgroundImage: {
+        'gradient-accent': 'linear-gradient(to right, var(--accent), var(--accent-secondary))',
+        'gradient-accent-diagonal':
+          'linear-gradient(135deg, var(--accent), var(--accent-secondary))',
+      },
+      keyframes: {
+        'pulse-dot': {
+          '0%, 100%': { transform: 'scale(1)', opacity: '1' },
+          '50%': { transform: 'scale(1.3)', opacity: '0.7' },
+        },
+        'spin-slow': {
+          to: { transform: 'rotate(360deg)' },
+        },
+        float: {
+          '0%, 100%': { transform: 'translateY(0)' },
+          '50%': { transform: 'translateY(-10px)' },
+        },
+      },
+      animation: {
+        'pulse-dot': 'pulse-dot 2s ease-in-out infinite',
+        'spin-slow': 'spin-slow 60s linear infinite',
+        float: 'float 5s ease-in-out infinite',
+      },
     },
-    // Mobile-first breakpoints. Default screens are already mobile-first
-    // (min-width based); keep them explicit for charter clarity.
+    // Mobile-first breakpoints — unchanged from Phase 1.
     screens: {
       sm: '480px',
       md: '768px',
@@ -45,12 +121,12 @@ export default {
     },
   },
   plugins: [
-    // ./tap utility — semantic alias for "this element is a touch target"
+    // ./tap utility kept for back-compat / semantic intent
     function tapTargetPlugin({ addUtilities }) {
       addUtilities({
         '.tap': {
-          'min-height': '44px',
-          'min-width': '44px',
+          'min-height': 'var(--tap-target)',
+          'min-width': 'var(--tap-target)',
           display: 'inline-flex',
           'align-items': 'center',
           'justify-content': 'center',
