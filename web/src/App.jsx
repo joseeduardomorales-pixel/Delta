@@ -6,6 +6,7 @@ import Login from './routes/Login.jsx';
 import Chat from './routes/Chat.jsx';
 import AssetHistory from './routes/AssetHistory.jsx';
 import ReviewQueue from './routes/admin/ReviewQueue.jsx';
+import Users from './routes/admin/Users.jsx';
 
 export default function App() {
   return (
@@ -35,6 +36,14 @@ export default function App() {
               element={
                 <RequireAuth requireRole="admin">
                   <ReviewQueue />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/admin/users"
+              element={
+                <RequireAuth requireRole="admin">
+                  <Users />
                 </RequireAuth>
               }
             />

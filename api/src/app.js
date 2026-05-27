@@ -11,6 +11,7 @@ import { chatRouter } from './routes/chat.js';
 import { uploadsRouter } from './routes/uploads.js';
 import { assetsRouter } from './routes/assets.js';
 import { adminWorkOrdersRouter } from './routes/admin_work_orders.js';
+import { adminUsersRouter } from './routes/admin_users.js';
 
 export function createApp() {
   const app = express();
@@ -40,6 +41,7 @@ export function createApp() {
   app.use(uploadsRouter);
   app.use(assetsRouter);
   app.use(adminWorkOrdersRouter);
+  app.use(adminUsersRouter);
 
   // 404 — explicit, logged.
   app.use((req, res) => {
