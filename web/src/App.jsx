@@ -5,6 +5,7 @@ import { ToastProvider } from './components/ui/index.js';
 import Login from './routes/Login.jsx';
 import Chat from './routes/Chat.jsx';
 import AssetHistory from './routes/AssetHistory.jsx';
+import ReviewQueue from './routes/admin/ReviewQueue.jsx';
 
 export default function App() {
   return (
@@ -26,6 +27,14 @@ export default function App() {
               element={
                 <RequireAuth>
                   <AssetHistory />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/admin/work-orders/pending"
+              element={
+                <RequireAuth requireRole="admin">
+                  <ReviewQueue />
                 </RequireAuth>
               }
             />
