@@ -9,6 +9,7 @@ import { healthRouter } from './routes/health.js';
 import { meRouter } from './routes/me.js';
 import { chatRouter } from './routes/chat.js';
 import { uploadsRouter } from './routes/uploads.js';
+import { assetsRouter } from './routes/assets.js';
 
 export function createApp() {
   const app = express();
@@ -36,6 +37,7 @@ export function createApp() {
   app.use(meRouter);
   app.use(chatRouter);
   app.use(uploadsRouter);
+  app.use(assetsRouter);
 
   // 404 — explicit, logged.
   app.use((req, res) => {

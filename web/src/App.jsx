@@ -3,6 +3,7 @@ import { AuthProvider } from './auth/AuthProvider.jsx';
 import { RequireAuth } from './auth/RequireAuth.jsx';
 import Login from './routes/Login.jsx';
 import Chat from './routes/Chat.jsx';
+import AssetHistory from './routes/AssetHistory.jsx';
 
 export default function App() {
   return (
@@ -15,6 +16,14 @@ export default function App() {
             element={
               <RequireAuth>
                 <Chat />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/assets/:unit"
+            element={
+              <RequireAuth>
+                <AssetHistory />
               </RequireAuth>
             }
           />
