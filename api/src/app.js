@@ -7,6 +7,7 @@ import { config } from './config.js';
 import { httpLogger, logger } from './logger.js';
 import { healthRouter } from './routes/health.js';
 import { meRouter } from './routes/me.js';
+import { chatRouter } from './routes/chat.js';
 
 export function createApp() {
   const app = express();
@@ -32,6 +33,7 @@ export function createApp() {
 
   app.use(healthRouter);
   app.use(meRouter);
+  app.use(chatRouter);
 
   // 404 — explicit, logged.
   app.use((req, res) => {
