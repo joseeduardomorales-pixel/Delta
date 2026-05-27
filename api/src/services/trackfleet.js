@@ -16,7 +16,10 @@
 import { logger } from '../logger.js';
 
 const TOKEN_TTL_MS = 12 * 60 * 1000;
-const REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_TIMEOUT_MS = 30_000;
+// reeferPeriod pulls historical telemetry and can take 20–40s per
+// trailer even on small windows. Give it more headroom.
+const REEFER_TIMEOUT_MS = 90_000;
 
 let cached = null; // { token, expiresAt }
 let inflight = null;
@@ -34,7 +37,7 @@ function getEnv() {
   return { base, usercode, username, password };
 }
 
-function fetchWithTimeout(url, opts = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+function fetchWithTimeout(url, opts = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
   return fetch(url, { ...opts, signal: controller.signal }).finally(() =>
@@ -80,21 +83,25 @@ export function invalidateToken() {
   cached = null;
 }
 
-async function request(method, path, body) {
+async function request(method, path, body, { timeoutMs } = {}) {
   const { base } = getEnv();
   const url = `${base}${path}`;
 
   async function attempt() {
     const token = await getToken();
-    return fetchWithTimeout(url, {
-      method,
-      headers: {
-        Authorization: token, // raw JWT — TrackFleet does NOT use "Bearer "
-        Accept: 'application/json',
-        ...(body ? { 'Content-Type': 'application/json' } : {}),
+    return fetchWithTimeout(
+      url,
+      {
+        method,
+        headers: {
+          Authorization: token, // raw JWT — TrackFleet does NOT use "Bearer "
+          Accept: 'application/json',
+          ...(body ? { 'Content-Type': 'application/json' } : {}),
+        },
+        ...(body ? { body: JSON.stringify(body) } : {}),
       },
-      ...(body ? { body: JSON.stringify(body) } : {}),
-    });
+      timeoutMs,
+    );
   }
 
   const t0 = Date.now();
@@ -150,6 +157,7 @@ export async function getLatestReeferData(licences, { hoursBack = 48 } = {}) {
     'POST',
     `/trailers/${usercode}/reeferPeriod`,
     requestBody,
+    { timeoutMs: REEFER_TIMEOUT_MS },
   );
 
   return (data || []).map((entry) => {
