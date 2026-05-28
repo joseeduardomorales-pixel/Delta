@@ -9,6 +9,48 @@
     <meta name="apple-mobile-web-app-title" content="Delta" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Delta</title>
+    <!--
+      Cache killswitch. Visit https://delta.coldcargo.us/?reset=1 to force
+      a clean state — useful when a bad cached bundle is wedged in a
+      browser (iOS Chrome is especially sticky). Runs synchronously before
+      anything else loads so we don't render any stale shell first.
+    -->
+    <script>
+      (function () {
+        try {
+          var qs = window.location.search || '';
+          if (qs.indexOf('reset=1') === -1) return;
+          document.documentElement.style.background = '#FAFAFA';
+          document.write(
+            '<div style="font:14px system-ui;color:#666;padding:24px;">Resetting Delta…</div>'
+          );
+          var done = function () {
+            // Strip ?reset=1 and reload from network.
+            window.location.replace('/');
+          };
+          var nukeCaches = function () {
+            if (!('caches' in window)) return Promise.resolve();
+            return caches.keys().then(function (keys) {
+              return Promise.all(keys.map(function (k) { return caches.delete(k); }));
+            }).catch(function () {});
+          };
+          var nukeSWs = function () {
+            if (!('serviceWorker' in navigator)) return Promise.resolve();
+            return navigator.serviceWorker.getRegistrations().then(function (regs) {
+              return Promise.all(regs.map(function (r) { return r.unregister(); }));
+            }).catch(function () {});
+          };
+          // Clear localStorage flag we used for the (now-removed) auto-reload
+          try { sessionStorage.removeItem('delta:sw-reloaded'); } catch (e) {}
+          Promise.all([nukeCaches(), nukeSWs()]).then(done, done);
+          // Safety net: if something hangs, force reload after 3s.
+          setTimeout(done, 3000);
+        } catch (e) {
+          // Worst case: still reload to /, dropping the ?reset=1.
+          window.location.replace('/');
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -70,7 +70,11 @@ export default defineConfig({
         // origin in prod, but we still block here in case anyone serves
         // the API behind the same domain later).
         navigateFallback: '/index.html',
-        navigateFallbackDenylist: [/^\/api\//],
+        // Don't intercept /api/* (different origin in prod anyway), and
+        // don't intercept ?reset=1 — that URL is the user's escape hatch
+        // when the SW itself is broken; we MUST fall through to network
+        // so the fresh index.html (with killswitch inline) loads.
+        navigateFallbackDenylist: [/^\/api\//, /[?&]reset=1\b/],
         // Smaller cache footprint + an explicit cleanup on activate.
         cleanupOutdatedCaches: true,
         // Pre-cache size: ~600KB JS gz, plus assets. Default 2MB limit is
