@@ -63,7 +63,7 @@ export default function Login() {
             transition={{ duration: 0.6, ease: easeOut }}
             className="max-w-md w-full"
           >
-            <SectionLabel tone="accent" pulse>
+            <SectionLabel tone="accent">
               Cold Cargo · Maintenance Log
             </SectionLabel>
 
@@ -115,19 +115,17 @@ export default function Login() {
             </form>
           </motion.div>
 
-          {/* Right — decorative graphic (hidden on small screens) */}
-          <motion.div
-            initial={{ opacity: 0, scale: 0.94 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ duration: 0.8, ease: easeOut, delay: 0.15 }}
+          {/* Right — decorative graphic (hidden on small screens).
+              Animation was removed on Lalo's call — kept the layout
+              static. The composition (rings + glyph + fact cards) reads
+              fine without movement. */}
+          <div
             className="hidden lg:block relative h-[480px]"
             aria-hidden
           >
-            {/* Outer rotating dashed ring */}
+            {/* Outer dashed ring */}
             <div className="absolute inset-0 flex items-center justify-center">
-              <div
-                className="h-[420px] w-[420px] rounded-full border-2 border-dashed border-accent/30 animate-spin-slow"
-              />
+              <div className="h-[420px] w-[420px] rounded-full border-2 border-dashed border-accent/30" />
             </div>
 
             {/* Middle solid ring */}
@@ -137,33 +135,21 @@ export default function Login() {
 
             {/* Center Δ glyph card */}
             <div className="absolute inset-0 flex items-center justify-center">
-              <motion.div
-                animate={{ y: [-10, 10, -10] }}
-                transition={{ duration: 5, repeat: Infinity, ease: 'easeInOut' }}
-                className="relative h-32 w-32 rounded-2xl bg-gradient-accent-diagonal shadow-accent-lg flex items-center justify-center"
-              >
+              <div className="relative h-32 w-32 rounded-2xl bg-gradient-accent-diagonal shadow-accent-lg flex items-center justify-center">
                 <span className="font-display text-6xl text-accent-foreground leading-none">Δ</span>
-              </motion.div>
+              </div>
             </div>
 
-            {/* Floating fact cards */}
-            <motion.div
-              animate={{ y: [-8, 8, -8] }}
-              transition={{ duration: 4.5, repeat: Infinity, ease: 'easeInOut', delay: 0.3 }}
-              className="absolute top-8 right-6 rounded-xl bg-card border border-border shadow-md px-3 py-2 max-w-[160px]"
-            >
+            {/* Fact cards (static) */}
+            <div className="absolute top-8 right-6 rounded-xl bg-card border border-border shadow-md px-3 py-2 max-w-[160px]">
               <p className="text-[10px] uppercase tracking-widest text-muted-foreground">Fleet</p>
               <p className="mt-0.5 font-display text-lg leading-none">17 trucks</p>
-            </motion.div>
+            </div>
 
-            <motion.div
-              animate={{ y: [8, -8, 8] }}
-              transition={{ duration: 5.5, repeat: Infinity, ease: 'easeInOut', delay: 0.8 }}
-              className="absolute bottom-12 left-2 rounded-xl bg-card border border-border shadow-md px-3 py-2 max-w-[160px]"
-            >
+            <div className="absolute bottom-12 left-2 rounded-xl bg-card border border-border shadow-md px-3 py-2 max-w-[160px]">
               <p className="text-[10px] uppercase tracking-widest text-muted-foreground">Trailers</p>
               <p className="mt-0.5 font-display text-lg leading-none">22 reefers</p>
-            </motion.div>
+            </div>
 
             {/* Dot grid corner accent */}
             <div className="absolute bottom-0 right-0 grid grid-cols-3 gap-1.5">
@@ -171,7 +157,7 @@ export default function Login() {
                 <span key={i} className="h-1.5 w-1.5 rounded-full bg-accent/40" />
               ))}
             </div>
-          </motion.div>
+          </div>
         </div>
       </div>
     </main>
