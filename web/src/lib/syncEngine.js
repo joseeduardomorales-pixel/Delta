@@ -253,6 +253,31 @@ export class SyncEngine {
       return res.json();
     }
 
+    if (action.kind === 'update_pm_info') {
+      const url = `${this.ctx.apiUrl}/api/inspections/${action.inspection_id}`;
+      const res = await this.fetchImpl(url, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(action.payload || {}),
+      });
+      if (res.status === 401) {
+        const e = new Error('unauthorized');
+        e.permanent = false;
+        throw e;
+      }
+      if (res.status >= 400 && res.status < 500) {
+        const body = await res.json().catch(() => ({}));
+        const e = new Error(body.message || body.error || `HTTP ${res.status}`);
+        e.permanent = true;
+        throw e;
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    }
+
     if (action.kind === 'finalize') {
       const url = `${this.ctx.apiUrl}/api/inspections/${action.inspection_id}/complete`;
       const res = await this.fetchImpl(url, {

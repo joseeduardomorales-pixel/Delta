@@ -17,7 +17,7 @@ import {
   putInspectionCache,
   subscribe,
   getActionsForInspection,
-  getPhotosForItem,
+  getAllPhotosForInspection,
 } from './inspectionStore.js';
 
 export function useInspectionData({ inspectionId, accessToken, apiUrl }) {
@@ -75,57 +75,62 @@ export function useInspectionData({ inspectionId, accessToken, apiUrl }) {
 // Merge queued mark_item actions onto the cached snapshot so the UI shows
 // the latest tap even before the server has confirmed. Also overlays any
 // pending photos for failed items so the issue modal sees them.
+//
+// Perf: photos are pulled in a SINGLE IndexedDB read (getAllPhotosForInspection)
+// and grouped in memory. The previous per-item read was 57 IndexedDB
+// round-trips per tap, which felt laggy on the tablet.
 async function applyMarkOverlay(snapshot, markActions, inspectionId) {
-  if (!markActions.length) return snapshot;
+  // Always pull pending photos so the issue modal pre-fills work — even
+  // when no mark actions are queued.
+  const allPhotos = await getAllPhotosForInspection(inspectionId);
+  const photosByItem = new Map();
+  for (const p of allPhotos) {
+    if (!photosByItem.has(p.item_id)) photosByItem.set(p.item_id, []);
+    photosByItem.get(p.item_id).push(p);
+  }
+
+  if (!markActions.length && photosByItem.size === 0) return snapshot;
+
   const byItem = new Map();
   for (const a of markActions) byItem.set(a.item_id, a);
 
-  const sections = await Promise.all(
-    (snapshot.sections || []).map(async (sec) => ({
-      ...sec,
-      items: await Promise.all(
-        sec.items.map(async (it) => {
-          const action = byItem.get(it.id);
-          // Always include pending photo placeholders so the modal can
-          // render them as already-attached (even if not yet uploaded).
-          const pendingPhotos = await getPhotosForItem(inspectionId, it.id);
-          const pendingPhotoPreviews = pendingPhotos.map((p) => ({
-            id: p.id,
-            local: true,
-            status: p.status,
-            url: blobToObjectUrl(p.blob),
-          }));
-          if (!action) {
-            // No pending mark — keep server state but expose any pending
-            // photos for the next ISSUE modal open.
-            if (pendingPhotoPreviews.length) {
-              return {
-                ...it,
-                photos: [...(it.photos || []), ...pendingPhotoPreviews],
-              };
-            }
-            return it;
-          }
-          // Pending mark overlay — show as `done` with the queued result.
+  const sections = (snapshot.sections || []).map((sec) => ({
+    ...sec,
+    items: sec.items.map((it) => {
+      const action = byItem.get(it.id);
+      const pendingPhotos = photosByItem.get(it.id) || [];
+      const pendingPhotoPreviews = pendingPhotos.map((p) => ({
+        id: p.id,
+        local: true,
+        status: p.status,
+        url: blobToObjectUrl(p.blob),
+      }));
+      if (!action) {
+        if (pendingPhotoPreviews.length) {
           return {
             ...it,
-            inspection_result: action.payload.inspection_result,
-            status: 'done',
-            notes: action.payload.notes ?? it.notes,
-            measurement_value:
-              action.payload.measurement_value ?? it.measurement_value,
-            photos: [
-              ...(it.photos || []).filter(
-                (p) => !action.payload.remove_photo_ids?.includes(p.id),
-              ),
-              ...pendingPhotoPreviews,
-            ],
-            _pending_sync: action.status, // 'queued' | 'syncing' | 'needs_attention'
+            photos: [...(it.photos || []), ...pendingPhotoPreviews],
           };
-        }),
-      ),
-    })),
-  );
+        }
+        return it;
+      }
+      return {
+        ...it,
+        inspection_result: action.payload.inspection_result,
+        status: 'done',
+        notes: action.payload.notes ?? it.notes,
+        measurement_value:
+          action.payload.measurement_value ?? it.measurement_value,
+        photos: [
+          ...(it.photos || []).filter(
+            (p) => !action.payload.remove_photo_ids?.includes(p.id),
+          ),
+          ...pendingPhotoPreviews,
+        ],
+        _pending_sync: action.status, // 'queued' | 'syncing' | 'needs_attention'
+      };
+    }),
+  }));
   return { ...snapshot, sections };
 }
 

@@ -118,6 +118,9 @@ function actionIdFor({ kind, inspection_id, item_id }) {
   if (kind === 'finalize') {
     return `finalize:${inspection_id}`;
   }
+  if (kind === 'update_pm_info') {
+    return `pm:${inspection_id}`;
+  }
   return `${kind}:${inspection_id}:${crypto.randomUUID()}`;
 }
 
@@ -212,6 +215,16 @@ export async function getPhotosForItem(inspectionId, itemId) {
     inspectionId,
     itemId,
   ]);
+}
+
+// Batched alternative to N×getPhotosForItem when the caller wants every
+// pending photo for an inspection. Single IndexedDB read; caller groups
+// by item_id in memory. Used on the hot path of useInspectionData so
+// every tap doesn't trigger 57 individual queries.
+export async function getAllPhotosForInspection(inspectionId) {
+  const db = await getDb();
+  const all = await db.getAll('pending_photos');
+  return all.filter((p) => p.inspection_id === inspectionId);
 }
 
 export async function getPhotoById(id) {

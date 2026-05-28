@@ -268,6 +268,7 @@ inspectionsRouter.get('/api/inspections/:id', requireAuth, async (req, res) => {
     .select(
       `id, work_order_id, template_id, started_at, completed_at,
        technician_signed_at, supervisor_signed_at, notes, display_seq,
+       last_pm_date, last_pm_hours,
        template:inspection_templates ( id, name, description, scope ),
        work_order:work_orders ( id, asset_unit_number, status, started_at, user_id, display_seq,
          user:users!work_orders_user_id_fkey ( handle ) ),
@@ -336,6 +337,37 @@ inspectionsRouter.get('/api/inspections/:id', requireAuth, async (req, res) => {
   );
 
   res.json({ inspection: insp, sections: grouped });
+});
+
+// ───── PATCH /api/inspections/:id (metadata only) ───────────────────────────
+// Updates the inspection's own fields (last_pm_date, last_pm_hours, notes).
+// Does NOT touch items — for that use PATCH /items/:itemId below.
+inspectionsRouter.patch('/api/inspections/:id', requireAuth, async (req, res) => {
+  const { last_pm_date, last_pm_hours, notes } = req.body || {};
+  const update = {};
+  if (last_pm_date === null || typeof last_pm_date === 'string') {
+    update.last_pm_date = last_pm_date || null;
+  }
+  if (last_pm_hours === null || last_pm_hours === '' || Number.isFinite(Number(last_pm_hours))) {
+    update.last_pm_hours =
+      last_pm_hours === null || last_pm_hours === '' ? null : Number(last_pm_hours);
+  }
+  if (typeof notes === 'string') {
+    update.notes = notes.trim() || null;
+  }
+  if (Object.keys(update).length === 0) {
+    return res.status(400).json({ error: 'no_fields_to_update' });
+  }
+  const admin = getSupabaseAdmin();
+  const { data, error } = await admin
+    .from('work_order_inspections')
+    .update(update)
+    .eq('id', req.params.id)
+    .select('id, last_pm_date, last_pm_hours, notes')
+    .maybeSingle();
+  if (error) return res.status(500).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: 'inspection_not_found' });
+  res.json({ inspection: data });
 });
 
 // ───── PATCH /api/inspections/:id/items/:itemId ──────────────────────────────
