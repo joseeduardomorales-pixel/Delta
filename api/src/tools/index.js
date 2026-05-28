@@ -29,6 +29,7 @@ import { completeItem } from './complete_item.js';
 import { closeWorkOrder } from './close_work_order.js';
 import { logCompletedWork } from './log_completed_work.js';
 import { voidWorkOrder } from './void_work_order.js';
+import { startInspection } from './start_inspection.js';
 
 const ALL_TOOLS = [
   listAssets,
@@ -40,6 +41,7 @@ const ALL_TOOLS = [
   closeWorkOrder,
   logCompletedWork,
   voidWorkOrder,
+  startInspection,
 ];
 
 export function toolsForRole(role) {

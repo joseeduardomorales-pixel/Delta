@@ -5,6 +5,7 @@ import { ToastProvider } from './components/ui/index.js';
 import Login from './routes/Login.jsx';
 import Chat from './routes/Chat.jsx';
 import AssetHistory from './routes/AssetHistory.jsx';
+import InspectionRunner from './routes/InspectionRunner.jsx';
 import ReviewQueue from './routes/admin/ReviewQueue.jsx';
 import Users from './routes/admin/Users.jsx';
 import PmSchedules from './routes/admin/PmSchedules.jsx';
@@ -30,6 +31,14 @@ export default function App() {
               element={
                 <RequireAuth>
                   <AssetHistory />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/work-orders/:woId/inspect/:inspectionId"
+              element={
+                <RequireAuth>
+                  <InspectionRunner />
                 </RequireAuth>
               }
             />

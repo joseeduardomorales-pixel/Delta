@@ -54,7 +54,15 @@ assetsRouter.get(
     const limit = Math.min(Number(req.query.limit) || 50, 200);
     const unit = req.params.unit;
 
-    const [woRes, issuesRes] = await Promise.all([
+    // Resolve asset id first so we can scope inspections by work_order_id.
+    const { data: assetRow } = await admin
+      .from('assets')
+      .select('id')
+      .ilike('unit_number', unit)
+      .maybeSingle();
+    const assetId = assetRow?.id;
+
+    const [woRes, issuesRes, inspRes] = await Promise.all([
       admin
         .from('work_orders')
         .select(
@@ -67,7 +75,8 @@ assetsRouter.get(
            items:work_order_items (
              id, sequence, source, source_issue_id, source_pm_schedule_id,
              source_campaign_assignment_id, type, title, description, raw_input,
-             status, notes, skipped_reason, completed_at, completed_by_user_id
+             status, notes, skipped_reason, completed_at, completed_by_user_id,
+             inspection_template_id, inspection_result
            )`,
         )
         .ilike('asset_unit_number', unit)
@@ -84,13 +93,60 @@ assetsRouter.get(
         .ilike('asset_unit_number', unit)
         .order('reported_at', { ascending: false })
         .limit(limit),
+      assetId
+        ? admin
+            .from('work_order_inspections')
+            .select(
+              `id, work_order_id, template_id, started_at, completed_at,
+               technician_signed_at, supervisor_signed_at, notes,
+               template:inspection_templates ( id, name, scope ),
+               started_by_user:users!work_order_inspections_started_by_fkey ( id, full_name )`,
+            )
+            .in(
+              'work_order_id',
+              (
+                await admin
+                  .from('work_orders')
+                  .select('id')
+                  .eq('asset_id', assetId)
+                  .order('started_at', { ascending: false })
+                  .limit(limit)
+              ).data?.map((w) => w.id) || ['00000000-0000-0000-0000-000000000000'],
+            )
+            .order('started_at', { ascending: false })
+        : Promise.resolve({ data: [], error: null }),
     ]);
 
     if (woRes.error) return res.status(500).json({ error: woRes.error.message });
     if (issuesRes.error) return res.status(500).json({ error: issuesRes.error.message });
+    if (inspRes.error) return res.status(500).json({ error: inspRes.error.message });
 
     const rows = woRes.data ?? [];
     const issues = issuesRes.data ?? [];
+    const inspections = inspRes.data ?? [];
+
+    // Compute fail count per inspection on the fly from items we already pulled.
+    const failsByInsp = new Map();
+    const passesByInsp = new Map();
+    for (const wo of rows) {
+      for (const it of wo.items || []) {
+        if (!it.inspection_template_id) continue;
+        const key = `${wo.id}|${it.inspection_template_id}`;
+        if (it.inspection_result === 'fail' || it.inspection_result === 'no') {
+          failsByInsp.set(key, (failsByInsp.get(key) || 0) + 1);
+        } else if (it.inspection_result === 'pass' || it.inspection_result === 'yes') {
+          passesByInsp.set(key, (passesByInsp.get(key) || 0) + 1);
+        }
+      }
+    }
+    const inspectionsDecorated = inspections.map((i) => {
+      const k = `${i.work_order_id}|${i.template_id}`;
+      return {
+        ...i,
+        pass_count: passesByInsp.get(k) || 0,
+        fail_count: failsByInsp.get(k) || 0,
+      };
+    });
 
     // Sign photo URLs in parallel.
     const allPhotos = rows.flatMap((w) => w.action_photos ?? []);
@@ -133,6 +189,7 @@ assetsRouter.get(
       active_work_orders: active,
       completed_work_orders: completed,
       voided_work_orders: voided,
+      inspections: inspectionsDecorated,
     });
   },
 );

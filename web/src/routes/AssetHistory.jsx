@@ -17,6 +17,7 @@ import {
   XCircle,
   Clock,
   Gauge,
+  ClipboardCheck,
 } from 'lucide-react';
 import { useAuth } from '../auth/AuthProvider.jsx';
 import { API_URL } from '../lib/supabase.js';
@@ -209,6 +210,57 @@ function WorkOrderRow({ wo }) {
   );
 }
 
+// --- Inspection row --------------------------------------------------------
+function InspectionRow({ insp }) {
+  const completed = !!insp.completed_at;
+  const tone = !completed ? 'warning' : insp.fail_count > 0 ? 'danger' : 'success';
+  return (
+    <Card interactive className="p-4">
+      <div className="flex items-baseline justify-between gap-3">
+        <h3 className="text-base font-semibold text-foreground leading-snug">
+          {insp.template?.name || 'Inspection'}
+        </h3>
+        <Badge tone={tone}>
+          {!completed
+            ? 'in progress'
+            : insp.fail_count > 0
+              ? `${insp.fail_count} fail`
+              : 'all pass'}
+        </Badge>
+      </div>
+      <p className="mt-1 text-[11px] text-muted-foreground">
+        <span className="font-mono">INS-{insp.id.slice(0, 8)}</span>
+        <span className="mx-1.5">·</span>
+        {insp.started_by_user?.full_name || '?'}
+        <span className="mx-1.5">·</span>
+        {relativeTime(insp.completed_at || insp.started_at)}
+        {insp.pass_count + insp.fail_count > 0 && (
+          <>
+            <span className="mx-1.5">·</span>
+            <span className="text-success">{insp.pass_count} pass</span>
+            {insp.fail_count > 0 && (
+              <>
+                <span className="mx-1.5">·</span>
+                <span className="text-danger">{insp.fail_count} fail</span>
+              </>
+            )}
+          </>
+        )}
+      </p>
+      {!completed && (
+        <p className="mt-2">
+          <Link
+            to={`/work-orders/${insp.work_order_id}/inspect/${insp.id}`}
+            className="text-xs text-accent hover:underline"
+          >
+            Continue inspection →
+          </Link>
+        </p>
+      )}
+    </Card>
+  );
+}
+
 function Section({ title, tone, count, icon: Icon, children }) {
   return (
     <section className="mb-8">
@@ -335,6 +387,21 @@ export default function AssetHistory() {
                 </div>
               )}
             </Section>
+
+            {data.inspections?.length > 0 && (
+              <Section
+                title="Inspections"
+                tone="accent"
+                icon={ClipboardCheck}
+                count={data.inspections.length}
+              >
+                <div className="space-y-3">
+                  {data.inspections.map((i) => (
+                    <InspectionRow key={i.id} insp={i} />
+                  ))}
+                </div>
+              </Section>
+            )}
 
             <Section
               title="Active work orders"
