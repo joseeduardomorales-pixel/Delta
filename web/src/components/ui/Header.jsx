@@ -33,19 +33,24 @@ function Logo() {
   );
 }
 
-function AdminNav({ onClick, mobile = false }) {
+function MainNav({ onClick, mobile = false, isAdmin }) {
+  // Everyone sees Chat + Work Orders. Admins also see the admin tools.
   const links = [
-    { to: '/admin/work-orders/pending', label: 'Review queue' },
-    { to: '/admin/pm-schedules', label: 'PM schedules' },
-    { to: '/admin/campaigns', label: 'Campaigns' },
-    { to: '/admin/users', label: 'Users' },
+    { to: '/', label: 'Chat', everyone: true, end: true },
+    { to: '/work-orders', label: 'Work orders', everyone: true },
+    { to: '/admin/work-orders/pending', label: 'Review queue', adminOnly: true },
+    { to: '/admin/pm-schedules', label: 'PM schedules', adminOnly: true },
+    { to: '/admin/campaigns', label: 'Campaigns', adminOnly: true },
+    { to: '/admin/users', label: 'Users', adminOnly: true },
   ];
+  const visible = links.filter((l) => l.everyone || (l.adminOnly && isAdmin));
   return (
     <nav className={cn(mobile ? 'flex flex-col gap-1' : 'flex items-center gap-1')}>
-      {links.map((l) => (
+      {visible.map((l) => (
         <NavLink
           key={l.to}
           to={l.to}
+          end={l.end}
           onClick={onClick}
           className={({ isActive }) =>
             cn(
@@ -114,7 +119,7 @@ export function Header({ profile, onSignOut, context, sticky = false, className 
 
         {/* Desktop right side */}
         <div className="hidden md:flex items-center gap-3">
-          {isAdmin && <AdminNav />}
+          <MainNav isAdmin={isAdmin} />
           <span className="h-6 w-px bg-border" aria-hidden />
           <UserBlock profile={profile} onSignOut={onSignOut} />
         </div>
@@ -138,7 +143,7 @@ export function Header({ profile, onSignOut, context, sticky = false, className 
             {context && (
               <p className="text-xs text-muted-foreground">{context}</p>
             )}
-            {isAdmin && <AdminNav mobile onClick={() => setMenuOpen(false)} />}
+            <MainNav isAdmin={isAdmin} mobile onClick={() => setMenuOpen(false)} />
             <div className="h-px bg-border" />
             <UserBlock profile={profile} onSignOut={onSignOut} mobile />
             <p className="text-[10px] text-muted-foreground/70 text-center pt-2">

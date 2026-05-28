@@ -140,6 +140,65 @@ workOrdersRouter.post('/api/work-orders', requireAuth, async (req, res) => {
   }
 });
 
+// ----- GET /api/work-orders ----------------------------------------------
+// Paginated WO list with filters.
+//   ?status=open,in_progress,completed,voided  (default: open + in_progress)
+//   ?mine=1     restrict to caller's own WOs (default for non-admin)
+//   ?limit=50
+//
+// Admins see all WOs; tech/dispatcher see their own.
+workOrdersRouter.get('/api/work-orders', requireAuth, async (req, res) => {
+  const admin = getSupabaseAdmin();
+  const limit = Math.min(Number(req.query.limit) || 50, 200);
+  const statuses = req.query.status
+    ? String(req.query.status).split(',').map((s) => s.trim()).filter(Boolean)
+    : ['open', 'in_progress'];
+  const forceMine = req.query.mine === '1';
+  const isAdmin = req.user.role === 'admin';
+
+  let q = admin
+    .from('work_orders')
+    .select(
+      `id, asset_unit_number, status, summary, started_at, completed_at,
+       approval_status, voided_at,
+       user:users!work_orders_user_id_fkey ( id, full_name, role ),
+       opening_meter:meter_readings!work_orders_opening_meter_reading_id_fkey
+         ( value, unit ),
+       items:work_order_items ( id, status, inspection_result )`,
+    )
+    .in('status', statuses)
+    .order('started_at', { ascending: false })
+    .limit(limit);
+
+  // Non-admins only see their own WOs. Admins can opt in via ?mine=1.
+  if (!isAdmin || forceMine) {
+    q = q.eq('user_id', req.user.id);
+  }
+
+  const { data, error } = await q;
+  if (error) return res.status(500).json({ error: error.message });
+
+  // Compute compact per-WO counts.
+  const decorated = (data || []).map((wo) => {
+    const items = wo.items || [];
+    let done = 0, pending = 0, fail = 0;
+    for (const it of items) {
+      if (it.status === 'done') done += 1;
+      if (it.status === 'pending') pending += 1;
+      if (it.inspection_result === 'fail' || it.inspection_result === 'no') fail += 1;
+    }
+    return {
+      ...wo,
+      items: undefined,
+      item_count: items.length,
+      done_count: done,
+      pending_count: pending,
+      fail_count: fail,
+    };
+  });
+  res.json({ work_orders: decorated, count: decorated.length });
+});
+
 // ----- GET /api/work-orders/:id ------------------------------------------
 workOrdersRouter.get('/api/work-orders/:id', requireAuth, async (req, res) => {
   const admin = getSupabaseAdmin();

@@ -186,6 +186,66 @@ async function persistMessage({ admin, conversationId, role, content, toolCalls,
     .eq('id', conversationId);
 }
 
+// GET /api/conversations/latest
+// Returns the caller's most recent conversation + a flattened view of its
+// messages for the chat UI. If the user has no conversations yet, returns
+// { conversationId: null, messages: [] } so the UI can show its empty state.
+chatRouter.get('/api/conversations/latest', requireAuth, async (req, res) => {
+  try {
+    const admin = getSupabaseAdmin();
+    const { data: convo } = await admin
+      .from('conversations')
+      .select('id, last_message_at')
+      .eq('user_id', req.user.id)
+      .order('last_message_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!convo) {
+      return res.json({ conversationId: null, messages: [] });
+    }
+    const { data: rows, error } = await admin
+      .from('messages')
+      .select('role, content, created_at, related_work_order_id')
+      .eq('conversation_id', convo.id)
+      .order('created_at', { ascending: true })
+      .limit(HISTORY_LIMIT * 2);
+    if (error) throw new Error(error.message);
+
+    // Flatten the stored Anthropic-format content blocks into a {role, text,
+    // workOrders?} shape the chat UI expects. Skip tool_use / tool_result
+    // rows that don't have user-visible text — the UI only renders user
+    // and assistant text. Image blocks become a "[photo]" placeholder
+    // since we don't replay signed URLs here.
+    const messages = [];
+    for (const m of rows || []) {
+      // role='tool' rows are tool_result-only — skip in the UI
+      if (m.role === 'tool') continue;
+      const blocks = Array.isArray(m.content) ? m.content : [];
+      const textParts = [];
+      let imageCount = 0;
+      for (const b of blocks) {
+        if (b?.type === 'text' && typeof b.text === 'string') {
+          textParts.push(b.text);
+        } else if (b?.type === 'image') {
+          imageCount += 1;
+        }
+        // tool_use and tool_result blocks aren't shown
+      }
+      const text = textParts.join('\n').trim();
+      if (!text && imageCount === 0) continue;
+      messages.push({
+        role: m.role,
+        text: text + (imageCount > 0 ? ` (📎 ${imageCount})` : ''),
+      });
+    }
+
+    res.json({ conversationId: convo.id, messages });
+  } catch (e) {
+    logger.error({ err: e.message }, 'GET /api/conversations/latest: failed');
+    res.status(500).json({ error: 'load_failed' });
+  }
+});
+
 chatRouter.post('/api/chat', requireAuth, async (req, res) => {
   try {
     await handleChat(req, res);

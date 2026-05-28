@@ -2,7 +2,7 @@
 // Tech-facing primary UI. New palette + type + primitives, NO
 // decorative motion — speed and density matter more than flourish.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuth } from '../auth/AuthProvider.jsx';
 import { API_URL } from '../lib/supabase.js';
 import { Header, useToast } from '../components/ui/index.js';
@@ -16,6 +16,31 @@ export default function Chat() {
   const [messages, setMessages] = useState([]);
   const [pending, setPending] = useState(false);
   const [conversationId, setConversationId] = useState(null);
+
+  // On mount, hydrate the chat from the user's latest server-side
+  // conversation. Without this, navigating to /assets/foo and back via
+  // the Δ logo would land you in an empty chat even though the DB
+  // already has your history.
+  useEffect(() => {
+    let alive = true;
+    fetch(`${API_URL}/api/conversations/latest`, {
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!alive || !data) return;
+        if (data.conversationId) setConversationId(data.conversationId);
+        if (Array.isArray(data.messages) && data.messages.length > 0) {
+          setMessages(data.messages);
+        }
+      })
+      .catch(() => {
+        // Silent — empty chat shell is fine if the load fails.
+      });
+    return () => {
+      alive = false;
+    };
+  }, [session.access_token]);
 
   async function handleSend({ text, attachments }) {
     const photoNote =
@@ -100,7 +125,10 @@ export default function Chat() {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-background">
+    // dvh = dynamic viewport height. On mobile browsers, 100vh includes
+    // the URL/tab bar area which pushes the input off-screen. 100dvh
+    // tracks the visible area so the input is always reachable.
+    <div className="flex flex-col h-[100dvh] bg-background">
       <Header
         profile={profile}
         onSignOut={signOut}
