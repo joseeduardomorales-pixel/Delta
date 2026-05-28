@@ -39,6 +39,8 @@ import {
 } from '../components/ui/index.js';
 import { cn } from '../lib/cn.js';
 import { woLabel, inspectionLabel } from '../lib/numbers.js';
+import { createInspectionSyncQueue, isOnline } from '../lib/inspectionSync.js';
+import { WifiOff, RotateCw } from 'lucide-react';
 
 const easeOut = [0.16, 1, 0.3, 1];
 const MAX_PHOTOS = 4;
@@ -503,6 +505,22 @@ export default function InspectionRunner() {
   const [busyItemId, setBusyItemId] = useState(null);
   const [finalizing, setFinalizing] = useState(false);
   const [issueFor, setIssueFor] = useState(null); // item currently being failed
+  const [online, setOnline] = useState(isOnline());
+  const [syncMap, setSyncMap] = useState({}); // itemId → 'synced'|'pending'|'retry'
+  const queueRef = useRef(null);
+  if (!queueRef.current) queueRef.current = createInspectionSyncQueue();
+
+  // Track navigator online/offline so the banner shows up.
+  useEffect(() => {
+    const on = () => setOnline(true);
+    const off = () => setOnline(false);
+    window.addEventListener('online', on);
+    window.addEventListener('offline', off);
+    return () => {
+      window.removeEventListener('online', on);
+      window.removeEventListener('offline', off);
+    };
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -526,8 +544,60 @@ export default function InspectionRunner() {
   }, [load]);
 
   async function mark(itemId, payload) {
-    setBusyItemId(itemId);
-    try {
+    // Photo-bearing submissions (the ISSUE modal) can't be queued offline
+    // because they need active storage uploads — refuse politely so the
+    // tech doesn't lose typed text. The modal stays open.
+    const involvesPhotos =
+      Array.isArray(payload.attachments) || Array.isArray(payload.remove_photo_ids);
+    if (involvesPhotos && !isOnline()) {
+      const err = new Error('Connect to internet to record an issue with photos.');
+      pushToast({ tone: 'danger', title: 'Offline', text: err.message });
+      throw err;
+    }
+
+    // ── OPTIMISTIC: flip local state IMMEDIATELY so the button turns
+    // green/red without waiting for the server. ──
+    const previousSnapshot = (() => {
+      // Capture current state of the item for revert-on-failure.
+      let prev = null;
+      setData((d) => {
+        if (!d) return d;
+        for (const s of d.sections) {
+          for (const i of s.items) {
+            if (i.id === itemId) prev = { ...i };
+          }
+        }
+        return d;
+      });
+      return prev;
+    })();
+
+    setData((d) => {
+      if (!d) return d;
+      return {
+        ...d,
+        sections: d.sections.map((s) => ({
+          ...s,
+          items: s.items.map((i) =>
+            i.id === itemId
+              ? {
+                  ...i,
+                  inspection_result: payload.inspection_result,
+                  status: 'done',
+                  notes: payload.notes ?? i.notes,
+                }
+              : i,
+          ),
+        })),
+      };
+    });
+
+    // Mark this item as "syncing" so the UI can show a small spinner if
+    // it takes a while.
+    setSyncMap((m) => ({ ...m, [itemId]: 'pending' }));
+
+    // Wrap the fetch so the queue can call it on each attempt.
+    const run = async () => {
       const r = await fetch(
         `${API_URL}/api/inspections/${inspectionId}/items/${itemId}`,
         {
@@ -539,52 +609,96 @@ export default function InspectionRunner() {
           body: JSON.stringify(payload),
         },
       );
-      const resp = await r.json();
+      // 4xx is a permanent error — don't retry forever on validation
+      // failures. Only retry on 5xx / network errors.
+      if (r.status >= 400 && r.status < 500) {
+        const body = await r.json().catch(() => ({}));
+        const err = new Error(body.message || body.error || `HTTP ${r.status}`);
+        err.permanent = true;
+        throw err;
+      }
       if (!r.ok) {
-        throw new Error(resp.message || resp.error || `HTTP ${r.status}`);
+        throw new Error(`HTTP ${r.status}`);
       }
-      // No per-issue toast — the progress bar count and the
-      // "N issues logged on this asset" badge in the footer already
-      // communicate this. Toasts stack up and cover items while the
-      // tech is walking the trailer.
-      // Patch local state with the updated item.
-      setData((d) => {
-        if (!d) return d;
-        return {
-          ...d,
-          sections: d.sections.map((s) => ({
-            ...s,
-            items: s.items.map((i) =>
-              i.id === itemId
-                ? {
-                    ...i,
-                    inspection_result: resp.item.inspection_result,
-                    status: resp.item.status,
-                    completed_at: resp.item.completed_at,
-                    notes: resp.item.notes ?? i.notes,
-                  }
-                : i,
-            ),
-          })),
-        };
+      return r.json();
+    };
+
+    return new Promise((resolve, reject) => {
+      queueRef.current.enqueue({
+        itemId,
+        payload,
+        run: async () => {
+          try {
+            return await run();
+          } catch (e) {
+            if (e.permanent) {
+              // Permanent failure — revert local state, surface error,
+              // don't retry. The queue treats throw as a retry signal,
+              // so we resolve early here with a sentinel.
+              setData((d) => {
+                if (!d || !previousSnapshot) return d;
+                return {
+                  ...d,
+                  sections: d.sections.map((s) => ({
+                    ...s,
+                    items: s.items.map((i) =>
+                      i.id === itemId ? previousSnapshot : i,
+                    ),
+                  })),
+                };
+              });
+              setSyncMap((m) => {
+                const n = { ...m };
+                delete n[itemId];
+                return n;
+              });
+              pushToast({ tone: 'danger', title: 'Save failed', text: e.message });
+              reject(e);
+              // Resolve to the queue with a special marker so it doesn't retry.
+              return { __permanent: true };
+            }
+            throw e;
+          }
+        },
+        onStatusChange: (status, result, error) => {
+          setSyncMap((m) => {
+            if (status === 'synced') {
+              const n = { ...m };
+              delete n[itemId];
+              return n;
+            }
+            return { ...m, [itemId]: status };
+          });
+
+          if (status === 'synced' && result && !result.__permanent) {
+            // Server returned the authoritative item — reconcile.
+            setData((d) => {
+              if (!d) return d;
+              return {
+                ...d,
+                sections: d.sections.map((s) => ({
+                  ...s,
+                  items: s.items.map((i) =>
+                    i.id === itemId && result.item
+                      ? {
+                          ...i,
+                          inspection_result: result.item.inspection_result,
+                          status: result.item.status,
+                          completed_at: result.item.completed_at,
+                          notes: result.item.notes ?? i.notes,
+                        }
+                      : i,
+                  ),
+                })),
+              };
+            });
+            setIssueFor((cur) => (cur?.id === itemId ? null : cur));
+            if (involvesPhotos) load();
+            resolve(result);
+          }
+        },
       });
-      // Close the issue modal if it was open for this item.
-      setIssueFor((cur) => (cur?.id === itemId ? null : cur));
-      // If this was an issue submission (added/removed photos or notes),
-      // refresh from the server so the next edit sees the new photo state.
-      const involvedPhotos =
-        Array.isArray(payload.attachments) || Array.isArray(payload.remove_photo_ids);
-      if (involvedPhotos) {
-        // Fire-and-forget — current state already shows the right buttons,
-        // we just want fresh photo URLs for the next edit.
-        load();
-      }
-    } catch (e) {
-      pushToast({ tone: 'danger', title: 'Save failed', text: e.message });
-      throw e;
-    } finally {
-      setBusyItemId(null);
-    }
+    });
   }
 
   // Progress + counts
@@ -617,6 +731,9 @@ export default function InspectionRunner() {
   const pct = counts.total ? Math.round((counts.done / counts.total) * 100) : 0;
   const allDone = counts.total > 0 && counts.done === counts.total;
   const isCompleted = data?.inspection?.completed_at;
+  const pendingSync = Object.values(syncMap).filter((s) => s === 'pending').length;
+  const retrySync = Object.values(syncMap).filter((s) => s === 'retry').length;
+  const allSynced = pendingSync === 0 && retrySync === 0;
 
   async function finalize() {
     setFinalizing(true);
@@ -712,6 +829,43 @@ export default function InspectionRunner() {
 
         {!loading && !err && data && (
           <>
+            {/* Offline / sync status banner — sticky just above the progress bar */}
+            {(!online || retrySync > 0) && (
+              <div
+                className={cn(
+                  'sticky top-14 md:top-16 -mx-4 md:mx-0 px-4 md:px-5 py-2.5 mb-2 z-40',
+                  'flex items-center justify-between gap-3 flex-wrap',
+                  !online
+                    ? 'bg-warning-bg text-warning border-y border-warning/30'
+                    : 'bg-danger-bg text-danger border-y border-danger/30',
+                  'md:rounded-xl md:border',
+                )}
+              >
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  {!online ? (
+                    <>
+                      <WifiOff size={16} />
+                      Offline — changes will sync when you reconnect.
+                    </>
+                  ) : (
+                    <>
+                      <RotateCw size={16} />
+                      {retrySync} change{retrySync === 1 ? '' : 's'} failed to save.
+                    </>
+                  )}
+                </div>
+                {retrySync > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => queueRef.current.drain()}
+                    className="inline-flex items-center gap-1 text-xs font-semibold underline underline-offset-2"
+                  >
+                    Retry now
+                  </button>
+                )}
+              </div>
+            )}
+
             {/* Sticky progress bar */}
             <div className="sticky top-14 md:top-16 -mx-4 md:mx-0 px-4 md:px-5 py-3 mb-6 z-30 bg-background/95 backdrop-blur border-b border-border md:border md:rounded-xl md:bg-card md:shadow-sm">
               <div className="flex items-center justify-between text-xs mb-2 flex-wrap gap-2">
@@ -812,11 +966,18 @@ export default function InspectionRunner() {
                         {counts.total - counts.done === 1 ? '' : 's'} still pending.
                       </div>
                     )}
+                    {!allSynced && (
+                      <div className="mt-2 flex items-center gap-2 text-xs text-danger">
+                        <RotateCw size={14} />
+                        {pendingSync + retrySync} change
+                        {pendingSync + retrySync === 1 ? '' : 's'} still syncing — submit unlocks when done.
+                      </div>
+                    )}
                     <div className="mt-4 flex justify-end">
                       <Button
                         onClick={finalize}
                         loading={finalizing}
-                        disabled={!allDone || finalizing}
+                        disabled={!allDone || !allSynced || finalizing}
                       >
                         <ClipboardCheck size={16} />
                         Sign & submit inspection
