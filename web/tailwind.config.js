@@ -3,6 +3,11 @@
 // See docs/design-system-v2.md for the authoritative spec.
 
 export default {
+  // Gate every `hover:` Tailwind utility behind `@media (hover: hover)` so
+  // touch devices don't synthesize a hover state on the first tap (which
+  // caused two-tap activations on Cards, links, and buttons across the app).
+  // Mouse devices still get hover effects.
+  future: { hoverOnlyWhenSupported: true },
   content: ['./index.html', './src/**/*.{js,jsx,ts,tsx}'],
   theme: {
     extend: {
