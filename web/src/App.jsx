@@ -7,6 +7,7 @@ import Chat from './routes/Chat.jsx';
 import AssetHistory from './routes/AssetHistory.jsx';
 import InspectionRunner from './routes/InspectionRunner.jsx';
 import WorkOrders from './routes/WorkOrders.jsx';
+import Fleet from './routes/Fleet.jsx';
 import ReviewQueue from './routes/admin/ReviewQueue.jsx';
 import Users from './routes/admin/Users.jsx';
 import PmSchedules from './routes/admin/PmSchedules.jsx';
@@ -40,6 +41,14 @@ export default function App() {
               element={
                 <RequireAuth>
                   <WorkOrders />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/fleet"
+              element={
+                <RequireAuth>
+                  <Fleet />
                 </RequireAuth>
               }
             />

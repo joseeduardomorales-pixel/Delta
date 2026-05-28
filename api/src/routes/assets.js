@@ -15,14 +15,97 @@ assetsRouter.get('/api/assets', requireAuth, async (req, res) => {
   const { type, active, search } = req.query;
   let q = admin
     .from('assets')
-    .select('unit_number, type, make, model, year, vin, active')
+    .select('id, unit_number, type, make, model, year, vin, active, metadata')
     .order('unit_number');
   if (type) q = q.eq('type', type);
   if (active !== 'all') q = q.eq('active', true);
   if (search) q = q.ilike('unit_number', `%${search}%`);
-  const { data, error } = await q.limit(200);
+  const { data, error } = await q.limit(500);
   if (error) return res.status(500).json({ error: error.message });
-  res.json({ assets: data });
+  const rows = data || [];
+
+  // Decorate with the per-asset state the fleet UI needs:
+  //   - latest_meter (miles for trucks, hours for reefer units)
+  //   - open_issue_count
+  //   - active_inspection_count
+  const assetIds = rows.map((r) => r.id);
+  if (assetIds.length === 0) return res.json({ assets: [] });
+
+  const [{ data: meters }, { data: issues }, { data: openWOs }] = await Promise.all([
+    admin
+      .from('meter_readings')
+      .select('asset_id, unit, value, recorded_at')
+      .in('asset_id', assetIds)
+      .order('recorded_at', { ascending: false }),
+    admin
+      .from('issues')
+      .select('asset_id, status')
+      .in('asset_id', assetIds)
+      .in('status', ['open', 'acknowledged', 'in_progress']),
+    admin
+      .from('work_orders')
+      .select('id, asset_id, status')
+      .in('asset_id', assetIds)
+      .in('status', ['open', 'in_progress']),
+  ]);
+
+  // Latest meter per (asset, unit) — exploit that we ordered desc above.
+  const latestByAsset = new Map();
+  for (const m of meters || []) {
+    const bucket = latestByAsset.get(m.asset_id) || {};
+    if (!bucket[m.unit]) {
+      bucket[m.unit] = { value: m.value, recorded_at: m.recorded_at };
+      latestByAsset.set(m.asset_id, bucket);
+    }
+  }
+
+  // Open issue count per asset.
+  const issueCount = new Map();
+  for (const i of issues || []) {
+    issueCount.set(i.asset_id, (issueCount.get(i.asset_id) || 0) + 1);
+  }
+
+  // Active inspections per asset (via the WOs we just pulled).
+  const woIds = (openWOs || []).map((w) => w.id);
+  const insps = woIds.length
+    ? (await admin
+        .from('work_order_inspections')
+        .select('work_order_id')
+        .in('work_order_id', woIds)
+        .is('completed_at', null)).data || []
+    : [];
+  const woAsset = new Map((openWOs || []).map((w) => [w.id, w.asset_id]));
+  const inspCount = new Map();
+  for (const i of insps) {
+    const aid = woAsset.get(i.work_order_id);
+    if (aid) inspCount.set(aid, (inspCount.get(aid) || 0) + 1);
+  }
+
+  const decorated = rows.map((r) => {
+    const m = latestByAsset.get(r.id) || {};
+    const isReefer =
+      r.type === 'reefer' ||
+      (r.type === 'trailer' &&
+        String(r.metadata?.equipment_type || '').toLowerCase() === 'reefer');
+    const meterUnit = r.type === 'truck' ? 'miles' : isReefer ? 'hours' : null;
+    const latest = meterUnit ? m[meterUnit] : null;
+    return {
+      unit_number: r.unit_number,
+      type: r.type,
+      make: r.make,
+      model: r.model,
+      year: r.year,
+      vin: r.vin,
+      active: r.active,
+      latest_meter: latest
+        ? { value: latest.value, unit: meterUnit, recorded_at: latest.recorded_at }
+        : null,
+      open_issue_count: issueCount.get(r.id) || 0,
+      active_inspection_count: inspCount.get(r.id) || 0,
+    };
+  });
+
+  res.json({ assets: decorated });
 });
 
 assetsRouter.get('/api/assets/:unit', requireAuth, async (req, res) => {

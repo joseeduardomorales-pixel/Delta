@@ -38,6 +38,7 @@ function MainNav({ onClick, mobile = false, isAdmin }) {
   const links = [
     { to: '/', label: 'Chat', everyone: true, end: true },
     { to: '/work-orders', label: 'Work orders', everyone: true },
+    { to: '/fleet', label: 'Fleet', everyone: true },
     { to: '/admin/work-orders/pending', label: 'Review queue', adminOnly: true },
     { to: '/admin/pm-schedules', label: 'PM schedules', adminOnly: true },
     { to: '/admin/campaigns', label: 'Campaigns', adminOnly: true },
