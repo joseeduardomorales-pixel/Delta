@@ -1,68 +1,53 @@
-// Service-worker auto-reload coordinator.
+// Service-worker registration.
 //
-// The PWA plugin emits virtual:pwa-register, which exposes the workbox
-// registration lifecycle. We hook two events:
+// Why this is intentionally minimal:
+//   The PREVIOUS version of this file auto-reloaded the page on
+//   `onNeedRefresh`. That sounded clever — get the user onto the new
+//   bundle ASAP — but the SW takes a few seconds to download and install
+//   the precache (~660KB). If the user was mid-form (e.g. typing a
+//   password and clicking Sign In) when the timeout fired, the reload
+//   looked like "I clicked sign in and the page refreshed", and the
+//   in-flight auth handshake was killed.
 //
-//   - onNeedRefresh: a NEW service worker is installed and waiting to take
-//                    over. Because vite.config sets skipWaiting + clientsClaim
-//                    + registerType:'autoUpdate', the SW activates itself
-//                    on the next page navigation. To stop showing the user
-//                    stale code, we trigger a one-time reload here.
+// Current strategy:
+//   - vite.config sets registerType:'autoUpdate' + skipWaiting + clientsClaim.
+//     That gives us: a new SW installs in the background, takes over the
+//     tab immediately, but the JS already running in the page keeps running
+//     until the user navigates. On the NEXT navigation/refresh they get the
+//     fresh hashed JS naturally (index.html is no-store).
+//   - Render serves no-store on /index.html, /sw.js, /manifest.webmanifest
+//     so nothing stale survives a redeploy at the CDN/browser level.
+//   - One-visit lag for users with the PWA installed is acceptable for
+//     Cold Cargo's use case. If we ever need a "new version available —
+//     tap to refresh" pill, we can wire it through this file.
 //
-//   - onOfflineReady: the first install — the app is now usable offline.
-//                     We just log it.
-//
-// To prevent reload loops, we set a `sw-reloaded` flag on
-// sessionStorage so we only auto-reload once per session.
-//
-// Imported once from main.jsx (top-level side effect on app boot).
-
-const RELOADED_FLAG = 'delta:sw-reloaded';
+// All this file does now is poke the virtual:pwa-register module so the
+// SW gets registered. We log onNeedRefresh/onOfflineReady for visibility,
+// but DO NOT reload. Ever.
 
 export function setupServiceWorkerReload() {
-  // Only meaningful in the browser, and only when the plugin runs (it's
-  // a no-op in dev).
   if (typeof window === 'undefined') return;
 
-  // Lazy import: virtual:pwa-register only exists at build time via the
-  // vite-plugin-pwa virtual module. In dev mode (no SW registered), the
-  // import resolves to a stub that's still safe to call.
   import('virtual:pwa-register')
     .then(({ registerSW }) => {
       registerSW({
-        immediate: true, // Register on first load, don't wait.
-
+        immediate: true,
         onNeedRefresh() {
-          // A new SW is ready. With skipWaiting=true it has already
-          // activated, but the page is still running the OLD JS bundle.
-          // Force one reload to get the fresh code.
-          if (sessionStorage.getItem(RELOADED_FLAG)) {
-            // Already reloaded once in this tab — don't loop. The user
-            // can refresh manually if needed.
-            return;
-          }
-          sessionStorage.setItem(RELOADED_FLAG, '1');
-          // Tiny delay so any in-flight network requests can settle,
-          // and to make the transition feel less jarring.
-          setTimeout(() => {
-            window.location.reload();
-          }, 300);
+          // New SW installed and active (skipWaiting+clientsClaim).
+          // The page itself keeps running the old JS until next nav.
+          // eslint-disable-next-line no-console
+          console.info('Delta: new version installed — refresh anytime to load it.');
         },
-
         onOfflineReady() {
-          // Optional: could show a toast "Ready to work offline."
-          // Keeping silent for now to avoid noise.
+          // First install — usable offline now.
         },
-
         onRegisterError(err) {
-          // SW registration failed — usually a transient network error.
-          // The app still works; we just lose the offline cache.
           // eslint-disable-next-line no-console
           console.warn('Delta: SW registration failed', err);
         },
       });
     })
     .catch(() => {
-      // Dev mode (no PWA virtual module). Silent.
+      // Dev mode or import failure — silent.
     });
 }
