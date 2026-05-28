@@ -22,10 +22,60 @@
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { getSupabaseAdmin } from '../services/supabaseAdmin.js';
-import { attachStagingToWorkOrder } from '../services/storage.js';
+import { attachStagingToWorkOrder, signedReadUrl, deletePhotoById } from '../services/storage.js';
 import { logger } from '../logger.js';
 
 export const inspectionsRouter = Router();
+
+// ───── GET /api/inspections/mine ────────────────────────────────────────────
+// Returns the caller's IN-PROGRESS inspections (completed_at IS NULL) so the
+// Chat screen can render a "Resume" banner. Includes progress counts.
+inspectionsRouter.get('/api/inspections/mine', requireAuth, async (req, res) => {
+  const admin = getSupabaseAdmin();
+  const onlyOpen = req.query.open !== '0';
+
+  let q = admin
+    .from('work_order_inspections')
+    .select(
+      `id, work_order_id, template_id, started_at, completed_at, display_seq,
+       template:inspection_templates ( id, name, scope ),
+       work_order:work_orders ( id, asset_unit_number, status, display_seq,
+         user:users!work_orders_user_id_fkey ( handle ) )`,
+    )
+    .eq('started_by', req.user.id)
+    .order('started_at', { ascending: false })
+    .limit(20);
+  if (onlyOpen) q = q.is('completed_at', null);
+
+  const { data: insps, error } = await q;
+  if (error) return res.status(500).json({ error: error.message });
+  if (!insps?.length) return res.json({ inspections: [] });
+
+  // Per-inspection progress: count items by status/result.
+  const woIds = [...new Set(insps.map((i) => i.work_order_id))];
+  const tplIds = [...new Set(insps.map((i) => i.template_id))];
+  const { data: items } = await admin
+    .from('work_order_items')
+    .select('work_order_id, inspection_template_id, status, inspection_result')
+    .in('work_order_id', woIds)
+    .in('inspection_template_id', tplIds);
+
+  const decorated = insps.map((i) => {
+    const own = (items || []).filter(
+      (it) =>
+        it.work_order_id === i.work_order_id &&
+        it.inspection_template_id === i.template_id,
+    );
+    const total = own.length;
+    const done = own.filter((it) => it.status === 'done').length;
+    const fail = own.filter(
+      (it) => it.inspection_result === 'fail' || it.inspection_result === 'no',
+    ).length;
+    return { ...i, total, done, fail };
+  });
+
+  res.json({ inspections: decorated });
+});
 
 // ───── GET /api/inspection-templates ─────────────────────────────────────────
 inspectionsRouter.get('/api/inspection-templates', requireAuth, async (req, res) => {
@@ -229,7 +279,7 @@ inspectionsRouter.get('/api/inspections/:id', requireAuth, async (req, res) => {
   if (!insp) return res.status(404).json({ error: 'inspection_not_found' });
 
   // Get the WO items materialized for this inspection joined with template
-  // metadata (section, kind, etc).
+  // metadata (section, kind, etc) AND any photos attached to each item.
   const { data: items, error: e2 } = await admin
     .from('work_order_items')
     .select(
@@ -238,12 +288,27 @@ inspectionsRouter.get('/api/inspections/:id', requireAuth, async (req, res) => {
        source_inspection_template_item_id,
        template_item:inspection_template_items!work_order_items_source_inspection_template_item_id_fkey
          ( id, section, section_sequence, item_sequence, kind, good_answer,
-           measurement_unit, measurement_min, measurement_max, required )`,
+           measurement_unit, measurement_min, measurement_max, required ),
+       photos:action_photos!action_photos_work_order_item_id_fkey
+         ( id, storage_path, caption, uploaded_at )`,
     )
     .eq('work_order_id', insp.work_order_id)
     .eq('inspection_template_id', insp.template_id)
     .order('sequence', { ascending: true });
   if (e2) return res.status(500).json({ error: e2.message });
+
+  // Sign photo URLs (120s TTL — plenty for the modal flow).
+  const allPhotos = (items || []).flatMap((it) => it.photos || []);
+  const urlMap = new Map();
+  await Promise.all(
+    allPhotos.map(async (p) => {
+      try {
+        urlMap.set(p.id, await signedReadUrl(p.storage_path, 120));
+      } catch {
+        urlMap.set(p.id, null);
+      }
+    }),
+  );
 
   // Group by section in the response so the client doesn't have to.
   const sections = new Map();
@@ -257,7 +322,14 @@ inspectionsRouter.get('/api/inspections/:id', requireAuth, async (req, res) => {
         items: [],
       });
     }
-    sections.get(key).items.push(it);
+    const itemWithPhotoUrls = {
+      ...it,
+      photos: (it.photos || []).map((p) => ({
+        ...p,
+        url: urlMap.get(p.id) ?? null,
+      })),
+    };
+    sections.get(key).items.push(itemWithPhotoUrls);
   }
   const grouped = [...sections.values()].sort(
     (a, b) => a.section_sequence - b.section_sequence,
@@ -279,7 +351,8 @@ inspectionsRouter.patch(
         notes,
         measurement_value,
         measurement_text,
-        attachments, // optional array of { staging_path }
+        attachments, // optional array of { staging_path } — new photos to add
+        remove_photo_ids, // optional array of action_photos.id to delete
       } = req.body || {};
       if (!['pass', 'fail', 'na', 'yes', 'no'].includes(inspection_result)) {
         return res.status(400).json({ error: 'invalid_inspection_result' });
@@ -337,11 +410,42 @@ inspectionsRouter.patch(
           tk?.good_answer &&
           inspection_result !== tk.good_answer);
 
-      // Fails REQUIRE a description (notes) and at least one attached photo.
-      // Cap at 4 photos.
-      const photoList = Array.isArray(attachments)
+      // Fails REQUIRE a description (notes) AND at least one photo attached
+      // (after applying removals + additions). Cap total photos at 4.
+      const removeIds = Array.isArray(remove_photo_ids)
+        ? remove_photo_ids.filter((id) => typeof id === 'string')
+        : [];
+      const newPhotoList = Array.isArray(attachments)
         ? attachments.filter((a) => a?.staging_path).slice(0, 4)
         : [];
+
+      // Count what would survive after removals + how many adds bring us to.
+      let existingCount = 0;
+      if (isFail || removeIds.length) {
+        const { data: existingRows } = await admin
+          .from('action_photos')
+          .select('id')
+          .eq('work_order_item_id', item.id);
+        const existingIds = (existingRows || []).map((r) => r.id);
+        // Sanity: only allow removal of photos that actually belong to THIS item.
+        const validRemoves = removeIds.filter((id) => existingIds.includes(id));
+        existingCount = existingIds.length - validRemoves.length;
+        if (existingCount + newPhotoList.length > 4) {
+          return res.status(400).json({
+            error: 'too_many_photos',
+            message: 'Max 4 photos per issue.',
+          });
+        }
+        // Apply removals up front so we have a clean state if anything fails later.
+        for (const pid of validRemoves) {
+          try {
+            await deletePhotoById(pid);
+          } catch (e) {
+            logger.warn({ err: e.message, pid }, 'inspection: photo delete failed');
+          }
+        }
+      }
+
       if (isFail) {
         if (typeof notes !== 'string' || notes.trim().length < 3) {
           return res.status(400).json({
@@ -349,7 +453,7 @@ inspectionsRouter.patch(
             message: 'A description of the issue is required (3+ chars).',
           });
         }
-        if (photoList.length < 1) {
+        if (existingCount + newPhotoList.length < 1) {
           return res.status(400).json({
             error: 'photo_required',
             message: 'At least one photo is required for an issue.',
@@ -360,44 +464,64 @@ inspectionsRouter.patch(
       let createdIssue = null;
       const attachedPhotos = [];
       if (isFail) {
-        // Resolve asset_unit_number for the parent WO.
-        const { data: wo } = await admin
-          .from('work_orders')
-          .select('asset_id, asset_unit_number')
-          .eq('id', insp.work_order_id)
-          .maybeSingle();
-        // Create the issue. Title = inspection item text; description = notes.
-        const { data: iss } = await admin
+        // If this item already produced an issue (e.g. tech is editing the
+        // existing fail), update its description instead of creating a duplicate.
+        const { data: existingIssue } = await admin
           .from('issues')
-          .insert({
-            asset_id: wo?.asset_id ?? null,
-            asset_unit_number: wo?.asset_unit_number,
-            reported_by: req.user.id,
-            title: `[Inspection fail] ${item.title}`,
-            description: notes?.trim() || null,
-            raw_input: `inspection_item:${item.id}`,
-            parsed_data: {
-              source: 'inspection',
-              inspection_id: insp.id,
-              work_order_item_id: item.id,
-            },
-            status: 'open',
-          })
           .select('id, title, status')
-          .single();
-        createdIssue = iss
-          ? { id: iss.id, short_id: iss.id.slice(0, 8), title: iss.title }
-          : null;
+          .eq('raw_input', `inspection_item:${item.id}`)
+          .maybeSingle();
+        if (existingIssue) {
+          await admin
+            .from('issues')
+            .update({ description: notes?.trim() || null })
+            .eq('id', existingIssue.id);
+          createdIssue = {
+            id: existingIssue.id,
+            short_id: existingIssue.id.slice(0, 8),
+            title: existingIssue.title,
+            updated: true,
+          };
+        } else {
+          // Resolve asset_unit_number for the parent WO.
+          const { data: wo } = await admin
+            .from('work_orders')
+            .select('asset_id, asset_unit_number')
+            .eq('id', insp.work_order_id)
+            .maybeSingle();
+          const { data: iss } = await admin
+            .from('issues')
+            .insert({
+              asset_id: wo?.asset_id ?? null,
+              asset_unit_number: wo?.asset_unit_number,
+              reported_by: req.user.id,
+              title: `[Inspection fail] ${item.title}`,
+              description: notes?.trim() || null,
+              raw_input: `inspection_item:${item.id}`,
+              parsed_data: {
+                source: 'inspection',
+                inspection_id: insp.id,
+                work_order_item_id: item.id,
+              },
+              status: 'open',
+            })
+            .select('id, title, status')
+            .single();
+          createdIssue = iss
+            ? { id: iss.id, short_id: iss.id.slice(0, 8), title: iss.title }
+            : null;
+        }
 
         // Move each staged photo to permanent storage on the parent WO,
-        // captioned with the failing item title so it's findable on the
-        // kardex. Skips silently on per-photo errors so a single bad
-        // upload doesn't lose the inspection state we already saved.
-        for (const a of photoList) {
+        // tagged with the work_order_item_id so re-edits know which photos
+        // belong to this item. Skips silently on per-photo errors so a
+        // single bad upload doesn't lose the inspection state we saved.
+        for (const a of newPhotoList) {
           try {
             const photo = await attachStagingToWorkOrder({
               stagingPath: a.staging_path,
               workOrderId: insp.work_order_id,
+              workOrderItemId: item.id,
               uploadedBy: req.user.id,
               caption: `Inspection issue — ${item.title}`,
             });

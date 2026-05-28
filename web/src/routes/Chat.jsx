@@ -9,6 +9,7 @@ import { Header, useToast } from '../components/ui/index.js';
 import MessageList from '../components/MessageList.jsx';
 import MessageInput from '../components/MessageInput.jsx';
 import ReportIssueButton from '../components/ReportIssueButton.jsx';
+import ResumeInspectionsBanner from '../components/ResumeInspectionsBanner.jsx';
 
 export default function Chat() {
   const { session, profile, signOut } = useAuth();
@@ -135,6 +136,8 @@ export default function Chat() {
         context={profile?.role === 'admin' ? 'Chat · admin view' : 'Chat'}
         sticky
       />
+      {/* In-progress inspections — renders nothing if there are none. */}
+      <ResumeInspectionsBanner />
       {/* Quick-actions row — primary non-chat entry point */}
       <div className="border-b border-border bg-card/50 px-3 py-2 flex items-center justify-between gap-2">
         <p className="text-[11px] uppercase tracking-widest text-muted-foreground">

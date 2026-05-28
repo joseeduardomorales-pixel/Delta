@@ -45,6 +45,8 @@ const MAX_PHOTOS = 4;
 
 // ── Issue (fail) modal ──────────────────────────────────────────────────────
 // Description AND at least one photo (max 4) are both REQUIRED before submit.
+// When re-opened on an already-failed item, pre-fills with existing notes +
+// shows existing photos with a remove button. Server applies the diff.
 function IssueModal({ open, item, onClose, onConfirm, busy, accessToken }) {
   const tpl = item?.template_item || {};
   const isMeasurement = tpl.kind === 'measurement';
@@ -52,27 +54,36 @@ function IssueModal({ open, item, onClose, onConfirm, busy, accessToken }) {
 
   const [notes, setNotes] = useState('');
   const [measurement, setMeasurement] = useState('');
-  const [photos, setPhotos] = useState([]); // {localId, file, previewUrl, status, staging_path?}
+  // Existing photos (server-side, with `id` + `url`). Marked
+  // `pending_remove: true` when the user clicks X — submit sends those ids
+  // in remove_photo_ids and removes them locally after success.
+  const [existingPhotos, setExistingPhotos] = useState([]);
+  // New photos staged in this modal session.
+  const [newPhotos, setNewPhotos] = useState([]);
   const [submitErr, setSubmitErr] = useState(null);
   const nextId = useRef(1);
 
   useEffect(() => {
-    if (open) {
-      setNotes('');
-      setMeasurement('');
-      setPhotos([]);
+    if (open && item) {
+      setNotes(item.notes || '');
+      setMeasurement(item.measurement_value ?? '');
+      setExistingPhotos((item.photos || []).map((p) => ({ ...p, pending_remove: false })));
+      setNewPhotos([]);
       setSubmitErr(null);
-    } else {
+    } else if (!open) {
       // Cleanup any leftover object URLs.
-      for (const p of photos) {
+      for (const p of newPhotos) {
         if (p.previewUrl) URL.revokeObjectURL(p.previewUrl);
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, item?.id]);
+
+  const visibleExisting = existingPhotos.filter((p) => !p.pending_remove);
+  const totalCount = visibleExisting.length + newPhotos.filter((p) => p.status !== 'failed').length;
 
   async function onFiles(files) {
-    const remaining = MAX_PHOTOS - photos.length;
+    const remaining = MAX_PHOTOS - totalCount;
     if (remaining <= 0) return;
     const next = Array.from(files)
       .slice(0, remaining)
@@ -82,13 +93,13 @@ function IssueModal({ open, item, onClose, onConfirm, busy, accessToken }) {
         previewUrl: URL.createObjectURL(f),
         status: 'uploading',
       }));
-    setPhotos((curr) => [...curr, ...next]);
+    setNewPhotos((curr) => [...curr, ...next]);
     for (const p of next) {
       try {
         const { uploads } = await uploadPhotos({ files: [p.file], accessToken });
         const u = uploads[0];
         if (!u) throw new Error('upload rejected');
-        setPhotos((curr) =>
+        setNewPhotos((curr) =>
           curr.map((x) =>
             x.localId === p.localId
               ? { ...x, status: 'uploaded', staging_path: u.staging_path }
@@ -96,7 +107,7 @@ function IssueModal({ open, item, onClose, onConfirm, busy, accessToken }) {
           ),
         );
       } catch {
-        setPhotos((curr) =>
+        setNewPhotos((curr) =>
           curr.map((x) =>
             x.localId === p.localId ? { ...x, status: 'failed' } : x,
           ),
@@ -105,18 +116,30 @@ function IssueModal({ open, item, onClose, onConfirm, busy, accessToken }) {
     }
   }
 
-  function removePhoto(localId) {
-    setPhotos((curr) => {
+  function removeNewPhoto(localId) {
+    setNewPhotos((curr) => {
       const p = curr.find((x) => x.localId === localId);
       if (p?.previewUrl) URL.revokeObjectURL(p.previewUrl);
       return curr.filter((x) => x.localId !== localId);
     });
   }
 
-  const uploadedCount = photos.filter((p) => p.status === 'uploaded').length;
-  const anyUploading = photos.some((p) => p.status === 'uploading');
+  function markExistingForRemoval(id) {
+    setExistingPhotos((curr) =>
+      curr.map((p) => (p.id === id ? { ...p, pending_remove: true } : p)),
+    );
+  }
+
+  function undoRemoval(id) {
+    setExistingPhotos((curr) =>
+      curr.map((p) => (p.id === id ? { ...p, pending_remove: false } : p)),
+    );
+  }
+
+  const uploadedNewCount = newPhotos.filter((p) => p.status === 'uploaded').length;
+  const anyUploading = newPhotos.some((p) => p.status === 'uploading');
   const descOk = notes.trim().length >= 3;
-  const photosOk = uploadedCount >= 1;
+  const photosOk = visibleExisting.length + uploadedNewCount >= 1;
   const canSubmit = descOk && photosOk && !anyUploading && !busy;
 
   async function submit() {
@@ -126,9 +149,12 @@ function IssueModal({ open, item, onClose, onConfirm, busy, accessToken }) {
     const payload = {
       inspection_result: result,
       notes: notes.trim(),
-      attachments: photos
+      attachments: newPhotos
         .filter((p) => p.status === 'uploaded' && p.staging_path)
         .map((p) => ({ staging_path: p.staging_path })),
+      remove_photo_ids: existingPhotos
+        .filter((p) => p.pending_remove)
+        .map((p) => p.id),
     };
     if (isMeasurement && measurement !== '') {
       const n = Number(measurement);
@@ -195,20 +221,57 @@ function IssueModal({ open, item, onClose, onConfirm, busy, accessToken }) {
           }
         />
 
-        {/* Photo grid: capture/upload + previews + counter */}
+        {/* Photo grid: existing + new + add slot, capped at 4 visible */}
         <div>
           <div className="flex items-baseline justify-between mb-2">
             <div className="text-xs font-medium text-muted-foreground">
               Photos <span className="text-danger">(required, at least 1)</span>
             </div>
             <span className="text-[11px] text-muted-foreground">
-              {uploadedCount}/{MAX_PHOTOS}
+              {totalCount}/{MAX_PHOTOS}
             </span>
           </div>
           <div className="grid grid-cols-4 gap-2">
-            {photos.map((p) => (
+            {/* Existing photos already saved on the item */}
+            {existingPhotos.map((p) => (
               <div
-                key={p.localId}
+                key={`e-${p.id}`}
+                className={cn(
+                  'relative aspect-square rounded-lg overflow-hidden border',
+                  p.pending_remove ? 'border-danger/60 opacity-50' : 'border-success/50',
+                )}
+              >
+                {p.url ? (
+                  <img src={p.url} alt="" className="w-full h-full object-cover" />
+                ) : (
+                  <div className="w-full h-full bg-muted flex items-center justify-center text-muted-foreground">
+                    <ImageOff size={20} />
+                  </div>
+                )}
+                {p.pending_remove ? (
+                  <button
+                    type="button"
+                    onClick={() => undoRemoval(p.id)}
+                    className="absolute inset-0 flex items-center justify-center bg-danger/70 text-white text-[10px] uppercase tracking-wider hover:bg-danger/85"
+                  >
+                    will be removed · tap to undo
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => markExistingForRemoval(p.id)}
+                    className="absolute top-1 right-1 inline-flex h-6 w-6 items-center justify-center rounded-full bg-foreground/70 text-background hover:bg-foreground"
+                    aria-label="Remove photo"
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
+            ))}
+            {/* New photos staged in this modal session */}
+            {newPhotos.map((p) => (
+              <div
+                key={`n-${p.localId}`}
                 className={cn(
                   'relative aspect-square rounded-lg overflow-hidden border',
                   p.status === 'uploaded' && 'border-success/50',
@@ -239,7 +302,7 @@ function IssueModal({ open, item, onClose, onConfirm, busy, accessToken }) {
                 )}
                 <button
                   type="button"
-                  onClick={() => removePhoto(p.localId)}
+                  onClick={() => removeNewPhoto(p.localId)}
                   className="absolute top-1 right-1 inline-flex h-6 w-6 items-center justify-center rounded-full bg-foreground/70 text-background hover:bg-foreground"
                   aria-label="Remove photo"
                 >
@@ -247,7 +310,7 @@ function IssueModal({ open, item, onClose, onConfirm, busy, accessToken }) {
                 </button>
               </div>
             ))}
-            {photos.length < MAX_PHOTOS && (
+            {totalCount < MAX_PHOTOS && (
               <label
                 className={cn(
                   'aspect-square rounded-lg border-2 border-dashed border-border',
@@ -521,6 +584,15 @@ export default function InspectionRunner() {
       });
       // Close the issue modal if it was open for this item.
       setIssueFor((cur) => (cur?.id === itemId ? null : cur));
+      // If this was an issue submission (added/removed photos or notes),
+      // refresh from the server so the next edit sees the new photo state.
+      const involvedPhotos =
+        Array.isArray(payload.attachments) || Array.isArray(payload.remove_photo_ids);
+      if (involvedPhotos) {
+        // Fire-and-forget — current state already shows the right buttons,
+        // we just want fresh photo URLs for the next edit.
+        load();
+      }
     } catch (e) {
       pushToast({ tone: 'danger', title: 'Save failed', text: e.message });
       throw e;

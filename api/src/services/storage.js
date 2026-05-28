@@ -63,6 +63,7 @@ export async function uploadToStaging({ userId, buffer, mimetype, originalName }
 export async function attachStagingToWorkOrder({
   stagingPath,
   workOrderId,
+  workOrderItemId, // optional — set when the photo belongs to a specific item
   uploadedBy,
   caption,
 }) {
@@ -88,6 +89,7 @@ export async function attachStagingToWorkOrder({
     .from('action_photos')
     .insert({
       work_order_id: workOrderId,
+      work_order_item_id: workOrderItemId ?? null,
       storage_path: destPath,
       caption: caption ?? null,
       uploaded_by: uploadedBy,
@@ -103,6 +105,26 @@ export async function attachStagingToWorkOrder({
   }
   logger.info({ destPath, action_photo_id: data.id }, 'storage: photo attached');
   return data;
+}
+
+// Delete a photo — drops the storage object AND the action_photos row.
+// Caller is responsible for authorization (e.g. owning the WO).
+export async function deletePhotoById(photoId) {
+  const admin = getSupabaseAdmin();
+  const { data: row, error: rowErr } = await admin
+    .from('action_photos')
+    .select('id, storage_path')
+    .eq('id', photoId)
+    .maybeSingle();
+  if (rowErr) throw new Error(rowErr.message);
+  if (!row) return { ok: true, missing: true };
+  // Storage delete is best-effort — DB row removal is the source of truth.
+  await admin.storage.from(BUCKET).remove([row.storage_path]).catch((e) => {
+    logger.warn({ err: e?.message, path: row.storage_path }, 'storage: delete file failed');
+  });
+  const { error: delErr } = await admin.from('action_photos').delete().eq('id', photoId);
+  if (delErr) throw new Error(delErr.message);
+  return { ok: true };
 }
 
 // Issue a short-lived signed URL for viewing a photo from the client.
