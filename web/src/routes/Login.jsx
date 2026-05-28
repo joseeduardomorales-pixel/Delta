@@ -140,17 +140,6 @@ export default function Login() {
               </div>
             </div>
 
-            {/* Fact cards (static) */}
-            <div className="absolute top-8 right-6 rounded-xl bg-card border border-border shadow-md px-3 py-2 max-w-[160px]">
-              <p className="text-[10px] uppercase tracking-widest text-muted-foreground">Fleet</p>
-              <p className="mt-0.5 font-display text-lg leading-none">17 trucks</p>
-            </div>
-
-            <div className="absolute bottom-12 left-2 rounded-xl bg-card border border-border shadow-md px-3 py-2 max-w-[160px]">
-              <p className="text-[10px] uppercase tracking-widest text-muted-foreground">Trailers</p>
-              <p className="mt-0.5 font-display text-lg leading-none">22 reefers</p>
-            </div>
-
             {/* Dot grid corner accent */}
             <div className="absolute bottom-0 right-0 grid grid-cols-3 gap-1.5">
               {Array.from({ length: 9 }).map((_, i) => (
