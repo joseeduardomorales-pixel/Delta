@@ -18,23 +18,29 @@ adminWorkOrdersRouter.use(requireAuth, requireAdmin);
 const PHOTO_URL_TTL_S = 120;
 
 // ---- GET /api/admin/work-orders/pending ------------------------------------
+// Returns completed-and-pending-review WOs with their items + photos. Open or
+// in_progress WOs are not yet reviewable (the tech hasn't closed them).
 adminWorkOrdersRouter.get('/api/admin/work-orders/pending', async (req, res) => {
   const admin = getSupabaseAdmin();
   const { data, error } = await admin
     .from('work_orders')
     .select(
-      `id, asset_id, asset_unit_number, type, status, title, description,
-       raw_input, parsed_data, started_at, completed_at,
-       approval_status, approval_notes,
+      `id, asset_id, asset_unit_number, status, summary,
+       started_at, completed_at, approval_status, approval_notes,
+       opening_meter:meter_readings!work_orders_opening_meter_reading_id_fkey
+         ( value, unit, source, recorded_at ),
        action_photos ( id, storage_path, caption, uploaded_at ),
-       user:users!work_orders_user_id_fkey ( id, full_name, role )`,
+       user:users!work_orders_user_id_fkey ( id, full_name, role ),
+       items:work_order_items (
+         id, sequence, source, source_issue_id, source_pm_schedule_id,
+         source_campaign_assignment_id, type, title, description, raw_input,
+         status, notes, skipped_reason, completed_at
+       )`,
     )
     .eq('approval_status', 'pending_review')
-    // Voided rows don't need review — they were taken back by the tech
-    // within the grace window. Excluded here so the admin queue stays
-    // signal-only.
-    .neq('status', 'voided')
-    .order('started_at', { ascending: false })
+    // Only show closed WOs (or in_progress legacy rows). Voided are excluded.
+    .in('status', ['completed', 'in_progress'])
+    .order('completed_at', { ascending: false })
     .limit(200);
   if (error) return res.status(500).json({ error: error.message });
 
@@ -52,6 +58,7 @@ adminWorkOrdersRouter.get('/api/admin/work-orders/pending', async (req, res) => 
   );
   const decorated = (data ?? []).map((w) => ({
     ...w,
+    items: (w.items ?? []).sort((a, b) => a.sequence - b.sequence),
     action_photos: (w.action_photos ?? []).map((p) => ({
       ...p,
       url: urlMap.get(p.id) ?? null,
@@ -73,7 +80,7 @@ adminWorkOrdersRouter.post('/api/admin/work-orders/:id/approve', async (req, res
     })
     .eq('id', req.params.id)
     .eq('approval_status', 'pending_review')
-    .select('id, approval_status, approved_at, approved_by, title, asset_unit_number')
+    .select('id, approval_status, approved_at, approved_by, summary, asset_unit_number')
     .maybeSingle();
   if (error) {
     logger.error({ err: error.message, id: req.params.id }, 'approve: update failed');
@@ -111,7 +118,7 @@ adminWorkOrdersRouter.post('/api/admin/work-orders/:id/reject', async (req, res)
     })
     .eq('id', req.params.id)
     .eq('approval_status', 'pending_review')
-    .select('id, approval_status, approval_notes, title, asset_unit_number')
+    .select('id, approval_status, approval_notes, summary, asset_unit_number')
     .maybeSingle();
   if (error) return res.status(500).json({ error: error.message });
   if (!data) {
@@ -130,14 +137,11 @@ adminWorkOrdersRouter.post('/api/admin/work-orders/:id/reject', async (req, res)
 });
 
 // ---- PATCH /api/admin/work-orders/:id (edit) -------------------------------
-// Used by the "Fix" button before approval. Captures before/after diff in
-// audit_log so the original tech-narrated record is preserved.
-const ALLOWED_FIELDS = new Set([
-  'title',
-  'description',
-  'type',
-  'asset_unit_number',
-]);
+// Post-redesign the WO header has very few editable fields — title/type/
+// description moved down to work_order_items. The only WO-level field worth
+// fixing pre-approval is `summary`. Item-level fixes go through
+// /api/work-orders/:id/items/:itemId (already authed for admin).
+const ALLOWED_FIELDS = new Set(['summary', 'asset_unit_number']);
 
 adminWorkOrdersRouter.patch('/api/admin/work-orders/:id', async (req, res) => {
   const update = {};
@@ -151,10 +155,9 @@ adminWorkOrdersRouter.patch('/api/admin/work-orders/:id', async (req, res) => {
   }
   const admin = getSupabaseAdmin();
 
-  // Capture before for audit
   const { data: before, error: bErr } = await admin
     .from('work_orders')
-    .select('id, title, description, type, asset_unit_number')
+    .select('id, summary, asset_unit_number')
     .eq('id', req.params.id)
     .maybeSingle();
   if (bErr) return res.status(500).json({ error: bErr.message });
@@ -164,13 +167,10 @@ adminWorkOrdersRouter.patch('/api/admin/work-orders/:id', async (req, res) => {
     .from('work_orders')
     .update(update)
     .eq('id', req.params.id)
-    .select(
-      'id, title, description, type, asset_unit_number, approval_status',
-    )
+    .select('id, summary, asset_unit_number, approval_status')
     .maybeSingle();
   if (error) return res.status(500).json({ error: error.message });
 
-  // Only log the fields that actually changed.
   const diff = {};
   for (const k of Object.keys(update)) {
     if (before[k] !== update[k]) diff[k] = { before: before[k], after: update[k] };

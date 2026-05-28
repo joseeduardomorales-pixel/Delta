@@ -9,19 +9,37 @@
 // The registry returns the role-gated subset and dispatches by name.
 // ctx shape: { user: { id, role, fullName }, admin: SupabaseClient,
 //              conversationId, logger }
+//
+// New work-order session model (post-0005):
+//   - issues are reported via report_issue
+//   - work orders are sessions opened via open_work_order, with items
+//     added via add_item_to_work_order and completed via complete_item.
+//     Closed with close_work_order.
+//   - log_completed_work is the fast-path for narrated past-tense work.
+//   - query_pending_for_asset returns the pick list (issues + due PMs +
+//     campaigns).
+//   - void_work_order undoes a WO within the 5-min grace.
 
 import { listAssets } from './list_assets.js';
-import { queryPendingWork } from './query_pending_work.js';
-import { createWorkOrder } from './create_work_order.js';
+import { reportIssue } from './report_issue.js';
+import { queryPendingForAsset } from './query_pending_for_asset.js';
+import { openWorkOrder } from './open_work_order.js';
+import { addItemToWorkOrder } from './add_item_to_work_order.js';
+import { completeItem } from './complete_item.js';
+import { closeWorkOrder } from './close_work_order.js';
+import { logCompletedWork } from './log_completed_work.js';
 import { voidWorkOrder } from './void_work_order.js';
-import { getMeterReading } from './get_meter_reading.js';
 
 const ALL_TOOLS = [
   listAssets,
-  queryPendingWork,
-  createWorkOrder,
+  reportIssue,
+  queryPendingForAsset,
+  openWorkOrder,
+  addItemToWorkOrder,
+  completeItem,
+  closeWorkOrder,
+  logCompletedWork,
   voidWorkOrder,
-  getMeterReading,
 ];
 
 export function toolsForRole(role) {
@@ -46,6 +64,11 @@ export async function dispatchTool({ name, input, ctx }) {
   }
   try {
     const result = await tool.handler(input, ctx);
+    // Tools that return an error object set ok:false themselves; everything
+    // else gets the default ok:true wrapper.
+    if (result && Object.prototype.hasOwnProperty.call(result, 'ok')) {
+      return result;
+    }
     return { ok: true, ...result };
   } catch (e) {
     ctx.logger?.error(

@@ -1,6 +1,11 @@
 // /admin/work-orders/pending — admin review queue.
-// Lists every work_orders row with approval_status='pending_review' and
-// gives the admin: Approve · Fix (edit then approve) · Reject (notes).
+//
+// Post-redesign: a WO is a session with multiple items. The reviewer sees:
+//   - WO header (asset, tech, opening meter, summary)
+//   - All items (title, type, source, status, notes, skipped reason)
+//   - Photos
+//   - Approve / Reject. Editing the summary is the only WO-level fix; per-
+//     item fixes will come in a later iteration.
 
 import { useEffect, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -13,6 +18,10 @@ import {
   Inbox,
   ExternalLink,
   Loader2,
+  Gauge,
+  CheckCircle2,
+  XCircle,
+  Clock,
 } from 'lucide-react';
 import { useAuth } from '../../auth/AuthProvider.jsx';
 import { API_URL } from '../../lib/supabase.js';
@@ -25,11 +34,9 @@ import {
   Button,
   Input,
   Textarea,
-  Select,
   Modal,
   useToast,
 } from '../../components/ui/index.js';
-import { cn } from '../../lib/cn.js';
 
 const easeOut = [0.16, 1, 0.3, 1];
 
@@ -46,13 +53,30 @@ function relativeTime(iso) {
   return `${d}d ago`;
 }
 
+function fmtMeter(meter) {
+  if (!meter) return null;
+  const u = meter.unit === 'miles' ? 'mi' : 'hr';
+  return `${meter.value.toLocaleString()} ${u}`;
+}
+
+function ItemStatusIcon({ status }) {
+  if (status === 'done') return <CheckCircle2 size={14} className="text-success" />;
+  if (status === 'skipped') return <XCircle size={14} className="text-muted-foreground" />;
+  return <Clock size={14} className="text-warning" />;
+}
+
+function SourceBadge({ source }) {
+  if (source === 'issue') return <Badge tone="warning">issue</Badge>;
+  if (source === 'pm_schedule') return <Badge tone="accent">PM</Badge>;
+  if (source === 'campaign_assignment') return <Badge tone="accent">campaign</Badge>;
+  return <Badge tone="neutral">ad-hoc</Badge>;
+}
+
 // ---------- Per-row card --------------------------------------------------
 function PendingWO({ wo, onApprove, onReject, onSave, busy }) {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({
-    title: wo.title || '',
-    description: wo.description || '',
-    type: wo.type,
+    summary: wo.summary || '',
     asset_unit_number: wo.asset_unit_number || '',
   });
 
@@ -62,56 +86,46 @@ function PendingWO({ wo, onApprove, onReject, onSave, busy }) {
     setEditing(false);
   }
 
+  const meter = fmtMeter(wo.opening_meter);
+
   return (
     <Card className="p-5">
-      {/* Header: tech + time */}
+      {/* Header: tech + time + meter */}
       <div className="flex items-baseline justify-between gap-3 mb-3">
-        <div className="flex items-center gap-2 min-w-0">
+        <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <Badge tone="warning">pending review</Badge>
-          <span className="text-xs text-muted-foreground truncate">
+          <span className="text-xs text-muted-foreground">
             <span className="font-mono">WO-{wo.id.slice(0, 8)}</span>
             <span className="mx-1.5">·</span>
             {wo.user?.full_name || '?'}
             <span className="mx-1.5 text-muted-foreground/60">({wo.user?.role})</span>
           </span>
+          {meter && (
+            <span className="text-xs text-muted-foreground inline-flex items-center gap-1">
+              <Gauge size={11} /> {meter}
+            </span>
+          )}
         </div>
         <span className="text-xs text-muted-foreground whitespace-nowrap">
-          {relativeTime(wo.started_at)}
+          {relativeTime(wo.completed_at || wo.started_at)}
         </span>
       </div>
 
+      {/* Asset + summary (or edit form) */}
       {!editing ? (
         <>
           <div className="flex items-baseline gap-3 mb-1">
             <h3 className="font-display text-xl tracking-tight">
-              {wo.title || <span className="text-muted-foreground italic">(no title)</span>}
+              {wo.asset_unit_number}
             </h3>
+            {wo.summary && (
+              <span className="text-foreground/80 text-sm">— {wo.summary}</span>
+            )}
           </div>
-          <p className="text-xs text-muted-foreground mb-3">
-            <span className="font-mono text-foreground">{wo.asset_unit_number}</span>
-            <span className="mx-2">·</span>
-            <span className="capitalize">{wo.type}</span>
-          </p>
-
-          {wo.description && (
-            <p className="text-sm text-foreground/85 whitespace-pre-wrap leading-relaxed mb-2">
-              {wo.description}
-            </p>
-          )}
-          {wo.raw_input && wo.raw_input !== wo.description && (
-            <p className="text-[12px] text-muted-foreground italic leading-relaxed mb-3">
-              "{wo.raw_input}"
-            </p>
-          )}
         </>
       ) : (
         <div className="space-y-3 mb-3">
-          <div className="grid gap-3 sm:grid-cols-[2fr_1fr_1fr]">
-            <Input
-              label="Title"
-              value={form.title}
-              onChange={(e) => setForm({ ...form, title: e.target.value })}
-            />
+          <div className="grid gap-3 sm:grid-cols-[1fr_2fr]">
             <Input
               label="Asset"
               value={form.asset_unit_number}
@@ -119,28 +133,60 @@ function PendingWO({ wo, onApprove, onReject, onSave, busy }) {
                 setForm({ ...form, asset_unit_number: e.target.value.toUpperCase() })
               }
             />
-            <Select
-              label="Type"
-              value={form.type}
-              onChange={(e) => setForm({ ...form, type: e.target.value })}
-            >
-              <option value="pm">PM</option>
-              <option value="repair">Repair</option>
-              <option value="issue">Issue</option>
-              <option value="inspection">Inspection</option>
-              <option value="other">Other</option>
-            </Select>
+            <Input
+              label="Summary"
+              value={form.summary}
+              onChange={(e) => setForm({ ...form, summary: e.target.value })}
+              placeholder="Optional one-liner across all items."
+            />
           </div>
-          <Textarea
-            label="Description"
-            value={form.description}
-            onChange={(e) => setForm({ ...form, description: e.target.value })}
-            rows={3}
-          />
-          <p className="text-[11px] text-muted-foreground italic">
-            Original: "{wo.raw_input}"
-          </p>
         </div>
+      )}
+
+      {/* Items */}
+      {wo.items?.length > 0 ? (
+        <ul className="mt-3 space-y-2">
+          {wo.items.map((it) => (
+            <li
+              key={it.id}
+              className="flex items-start gap-2 text-sm text-foreground/90 rounded-md border border-border/60 bg-muted/30 p-3"
+            >
+              <span className="mt-0.5">
+                <ItemStatusIcon status={it.status} />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-medium">{it.title}</span>
+                  <SourceBadge source={it.source} />
+                  <Badge tone="neutral">{it.type}</Badge>
+                  <Badge tone="neutral">{it.status}</Badge>
+                </div>
+                {it.description && (
+                  <p className="mt-1 text-xs text-foreground/75">{it.description}</p>
+                )}
+                {it.raw_input && it.raw_input !== it.description && (
+                  <p className="mt-1 text-xs text-muted-foreground italic">
+                    "{it.raw_input}"
+                  </p>
+                )}
+                {it.notes && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    notes: {it.notes}
+                  </p>
+                )}
+                {it.skipped_reason && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    skipped: {it.skipped_reason}
+                  </p>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="mt-3 text-sm text-muted-foreground italic">
+          No items on this WO.
+        </p>
       )}
 
       {/* Photos */}
@@ -181,12 +227,7 @@ function PendingWO({ wo, onApprove, onReject, onSave, busy }) {
       <div className="mt-4 flex flex-wrap items-center gap-2 justify-end">
         {editing ? (
           <>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setEditing(false)}
-              disabled={busy}
-            >
+            <Button variant="ghost" size="sm" onClick={() => setEditing(false)} disabled={busy}>
               Cancel
             </Button>
             <Button size="sm" onClick={saveAndApprove} loading={busy}>
@@ -202,30 +243,15 @@ function PendingWO({ wo, onApprove, onReject, onSave, busy }) {
               <ExternalLink size={12} />
               View {wo.asset_unit_number}
             </Link>
-            <Button
-              variant="danger"
-              size="sm"
-              onClick={() => onReject(wo)}
-              disabled={busy}
-            >
+            <Button variant="danger" size="sm" onClick={() => onReject(wo)} disabled={busy}>
               <X size={14} />
               Reject
             </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => setEditing(true)}
-              disabled={busy}
-            >
+            <Button variant="secondary" size="sm" onClick={() => setEditing(true)} disabled={busy}>
               <Edit3 size={14} />
               Fix
             </Button>
-            <Button
-              size="sm"
-              onClick={() => onApprove(wo.id)}
-              loading={busy}
-              disabled={busy}
-            >
+            <Button size="sm" onClick={() => onApprove(wo.id)} loading={busy} disabled={busy}>
               <Check size={14} />
               Approve
             </Button>
@@ -248,7 +274,7 @@ function RejectModal({ open, wo, onClose, onConfirm, busy }) {
       onClose={onClose}
       destructive
       title={`Reject WO-${wo?.id?.slice(0, 8) || ''}`}
-      description="The tech will see your note in their next chat session. Be specific — what's wrong and what they should do."
+      description="The tech will see your note. Be specific — what's wrong and what they should do."
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={busy}>
@@ -285,7 +311,7 @@ export default function ReviewQueue() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
   const [busyId, setBusyId] = useState(null);
-  const [rejecting, setRejecting] = useState(null); // WO object or null
+  const [rejecting, setRejecting] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -311,16 +337,12 @@ export default function ReviewQueue() {
   async function approve(id) {
     setBusyId(id);
     try {
-      const r = await fetch(
-        `${API_URL}/api/admin/work-orders/${id}/approve`,
-        {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${session.access_token}` },
-        },
-      );
+      const r = await fetch(`${API_URL}/api/admin/work-orders/${id}/approve`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const data = await r.json();
-      // Remove the row optimistically.
       setRows((curr) => curr.filter((w) => w.id !== id));
       pushToast({
         tone: 'success',
@@ -337,17 +359,14 @@ export default function ReviewQueue() {
   async function reject(id, notes) {
     setBusyId(id);
     try {
-      const r = await fetch(
-        `${API_URL}/api/admin/work-orders/${id}/reject`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.access_token}`,
-          },
-          body: JSON.stringify({ notes }),
+      const r = await fetch(`${API_URL}/api/admin/work-orders/${id}/reject`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
         },
-      );
+        body: JSON.stringify({ notes }),
+      });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       setRows((curr) => curr.filter((w) => w.id !== id));
       pushToast({ tone: 'warning', title: 'Rejected', text: `WO-${id.slice(0, 8)}` });
@@ -398,8 +417,9 @@ export default function ReviewQueue() {
             Review <span className="text-gradient">work orders</span>
           </h1>
           <p className="mt-2 text-sm text-muted-foreground max-w-2xl leading-relaxed">
-            Approve clean records. Fix typos / wrong unit / wrong type before
-            approving. Reject with a note when the tech needs to redo it.
+            Each WO is a tech session on an asset with one or more items.
+            Approve once the items look right. Reject with a note when the
+            tech needs to redo something.
           </p>
         </motion.div>
 

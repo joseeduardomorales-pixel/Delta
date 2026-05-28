@@ -1,8 +1,8 @@
 // End-to-end test for /api/chat. Signs in as the bootstrap admin (role
-// switched to tech for the duration of the test so the create_work_order
+// switched to tech for the duration of the test so the log_completed_work
 // path through tech-role gating + RLS gets exercised), sends a real chat
 // message, asserts the work_orders row landed with approval_status=
-// 'pending_review'.
+// 'pending_review' AND has an item with the right type.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
@@ -47,8 +47,12 @@ describe('POST /api/chat (tool-use end-to-end)', () => {
 
   afterAll(async () => {
     const admin = getSupabaseAdmin();
-    // Cleanup: void test WOs and delete test conversations.
+    // Cleanup: delete items first (FK), then WOs, then conversations.
     if (createdWorkOrders.length) {
+      await admin
+        .from('work_order_items')
+        .delete()
+        .in('work_order_id', createdWorkOrders);
       await admin
         .from('work_orders')
         .delete()
@@ -97,21 +101,30 @@ describe('POST /api/chat (tool-use end-to-end)', () => {
 
       const wo = res.body.createdWorkOrders[0];
       expect(wo.asset_unit_number).toMatch(/CC07/i);
-      expect(['pm', 'repair']).toContain(wo.type);
-      expect(wo.approval_status).toBe('pending_review');
+      // Post-redesign: WO no longer has type/title; check the item instead.
 
       createdConversations.push(res.body.conversationId);
       createdWorkOrders.push(wo.id);
 
-      // Verify it actually persisted with the right shape
+      // Verify the WO + at least one item with the expected shape.
       const admin = getSupabaseAdmin();
-      const { data } = await admin
+      const { data: woRow } = await admin
         .from('work_orders')
-        .select('id, approval_status, user_id, raw_input, asset_unit_number')
+        .select('id, approval_status, user_id, asset_unit_number, status, summary')
         .eq('id', wo.id)
         .maybeSingle();
-      expect(data.approval_status).toBe('pending_review');
-      expect(data.raw_input).toMatch(/oil change/i);
+      expect(woRow.approval_status).toBe('pending_review');
+      expect(woRow.asset_unit_number).toMatch(/CC07/i);
+
+      const { data: items } = await admin
+        .from('work_order_items')
+        .select('id, type, title, status, raw_input, source')
+        .eq('work_order_id', wo.id);
+      expect(items.length).toBeGreaterThanOrEqual(1);
+      const item = items[0];
+      expect(['pm', 'repair', 'inspection', 'other']).toContain(item.type);
+      expect(item.status).toBe('done');
+      expect(item.raw_input).toMatch(/oil change/i);
     },
     60_000,
   );

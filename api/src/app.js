@@ -11,9 +11,11 @@ import { chatRouter } from './routes/chat.js';
 import { uploadsRouter } from './routes/uploads.js';
 import { assetsRouter } from './routes/assets.js';
 import { workOrdersRouter } from './routes/work_orders.js';
+import { issuesRouter } from './routes/issues.js';
 import { adminWorkOrdersRouter } from './routes/admin_work_orders.js';
 import { adminUsersRouter } from './routes/admin_users.js';
 import { adminPmSchedulesRouter } from './routes/admin_pm_schedules.js';
+import { adminCampaignsRouter } from './routes/admin_campaigns.js';
 
 export function createApp() {
   const app = express();
@@ -43,9 +45,11 @@ export function createApp() {
   app.use(uploadsRouter);
   app.use(assetsRouter);
   app.use(workOrdersRouter);
+  app.use(issuesRouter);
   app.use(adminWorkOrdersRouter);
   app.use(adminUsersRouter);
   app.use(adminPmSchedulesRouter);
+  app.use(adminCampaignsRouter);
 
   // 404 — explicit, logged.
   app.use((req, res) => {

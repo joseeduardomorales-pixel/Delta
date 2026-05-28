@@ -1,38 +1,34 @@
-// void_work_order — sets status='voided' on an own WO within the
-// 5-min grace window. The DB grace policy already enforces the time
-// window; we double-check here to give a friendly message.
+// void_work_order — undo a WO created within the 5-min grace window.
+//
+// Default behavior (no arguments): voids the user's most recent WO,
+// whatever its status. This is the right call when the user says
+// "undo" right after a log_completed_work or open_work_order.
+//
+// The 5-min grace is enforced both here (for a friendly error) and by
+// the DB grace policy.
 
-// We use a Postgres RPC for the lookup-by-short-id case because UUID
-// columns don't filter cleanly via PostgREST's LIKE. The common case
-// ("undo my last one") doesn't need a short id at all — we just take
-// the caller's most recent WO within the 5-min grace window.
 const GRACE_MS = 5 * 60 * 1000;
 
 export const voidWorkOrder = {
   name: 'void_work_order',
   description:
     'Void (undo) a work order the user just created. Use when the user ' +
-    'says "undo", "scratch that", "wrong truck", "actually no", etc.\n\n' +
-    'Default behavior (no arguments): void the user\'s most recent work ' +
-    'order created within the last 5 minutes. This is the right call ' +
-    '99% of the time — "undo" almost always means "the one I just logged".\n\n' +
-    'If the user clearly refers to an older work order they remember the ' +
-    'short_id of, pass it as `work_order_short_id` (8 hex chars).\n\n' +
-    'After 5 minutes, only admin can void via the admin UI.',
+    'says "undo", "scratch that", "wrong truck", etc.\n\n' +
+    'Default (no arguments): void the user\'s most recent WO created in ' +
+    'the last 5 minutes. This is the right call ~99% of the time. \n\n' +
+    'If the user refers to an older WO by its 8-char short_id, pass it as ' +
+    'work_order_short_id. After 5 min, only admins can void via the UI.',
   input_schema: {
     type: 'object',
     properties: {
       work_order_short_id: {
         type: 'string',
         description:
-          'OPTIONAL. The 8-character short id from a previous confirmation ' +
-          '(e.g., "df8ab191"). Omit to void the most recent WO automatically.',
+          'OPTIONAL. 8-character short id from a previous confirmation. ' +
+          'Omit to void the most recent WO automatically.',
         pattern: '^[0-9a-f]{8}$',
       },
-      reason: {
-        type: 'string',
-        description: 'Brief reason (e.g., "wrong truck", "duplicate").',
-      },
+      reason: { type: 'string', description: 'Brief reason (e.g., "wrong truck").' },
     },
   },
   allowedRoles: ['admin', 'tech'],
@@ -40,32 +36,27 @@ export const voidWorkOrder = {
     const { admin, user } = ctx;
     const graceFloor = new Date(Date.now() - GRACE_MS).toISOString();
 
-    // Find the candidate WO to void.
     let target = null;
     if (input.work_order_short_id) {
-      // Find by short id within the user's recent WOs. We pull recent rows
-      // and match the prefix in JS — avoids the uuid-LIKE issue.
-      const { data: recent, error } = await admin
+      const { data: recent } = await admin
         .from('work_orders')
-        .select('id, asset_unit_number, title, status')
+        .select('id, asset_unit_number, status')
         .eq('user_id', user.id)
         .gt('started_at', graceFloor)
         .order('started_at', { ascending: false })
         .limit(20);
-      if (error) throw new Error(error.message);
       target = (recent || []).find((r) =>
         r.id.startsWith(input.work_order_short_id),
       );
     } else {
-      const { data: recent, error } = await admin
+      const { data: recent } = await admin
         .from('work_orders')
-        .select('id, asset_unit_number, title, status')
+        .select('id, asset_unit_number, status')
         .eq('user_id', user.id)
         .gt('started_at', graceFloor)
         .neq('status', 'voided')
         .order('started_at', { ascending: false })
         .limit(1);
-      if (error) throw new Error(error.message);
       target = recent?.[0] ?? null;
     }
 
@@ -74,8 +65,8 @@ export const voidWorkOrder = {
         ok: false,
         error: 'no_recent_work_order',
         message:
-          'No work order from this user within the last 5 minutes. ' +
-          'Anything older has to be voided by an admin.',
+          'No WO from you in the last 5 minutes. Anything older has to be ' +
+          'voided by an admin.',
       };
     }
     if (target.status === 'voided') {
@@ -97,17 +88,14 @@ export const voidWorkOrder = {
       .eq('id', target.id)
       .eq('user_id', user.id)
       .gt('started_at', graceFloor)
-      .select('id, asset_unit_number, title')
+      .select('id, asset_unit_number')
       .maybeSingle();
-
     if (error) throw new Error(error.message);
     if (!data) {
       return {
         ok: false,
         error: 'cannot_void',
-        message:
-          'The work order may have aged out of the 5-min grace window ' +
-          'or been voided already. Ask an admin to void it.',
+        message: 'WO aged out of the grace window or was already voided.',
       };
     }
     return {
@@ -115,9 +103,8 @@ export const voidWorkOrder = {
         id: data.id,
         short_id: data.id.slice(0, 8),
         asset_unit_number: data.asset_unit_number,
-        title: data.title,
       },
-      confirmation: `Voided WO-${data.id.slice(0, 8)} (${data.title} on ${data.asset_unit_number}).`,
+      confirmation: `Voided WO-${data.id.slice(0, 8)} on ${data.asset_unit_number}.`,
     };
   },
 };

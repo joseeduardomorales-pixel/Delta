@@ -1,11 +1,23 @@
-// /assets/:unit — per-asset work-order history (the kardex view).
-// Mid-density v2 design: SectionLabels, Cards w/ hover lift, photo
-// thumbnails inline, status pills.
+// /assets/:unit — per-asset kardex.
+//
+// Post-redesign layout:
+//   1. Open issues   — pending problems anyone can act on
+//   2. Active WOs    — work sessions in progress
+//   3. Completed WOs — historical record, with approval status
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { ChevronLeft, ImageOff } from 'lucide-react';
+import {
+  ChevronLeft,
+  ImageOff,
+  AlertCircle,
+  Wrench,
+  CheckCircle2,
+  XCircle,
+  Clock,
+  Gauge,
+} from 'lucide-react';
 import { useAuth } from '../auth/AuthProvider.jsx';
 import { API_URL } from '../lib/supabase.js';
 import { Header, Card, Badge, SectionLabel, Banner } from '../components/ui/index.js';
@@ -27,44 +39,129 @@ function relativeTime(iso) {
   return `${d}d ago`;
 }
 
-function StatusPill({ status }) {
-  const map = {
-    open: 'warning',
-    in_progress: 'warning',
-    completed: 'success',
-    voided: 'neutral',
-  };
-  return <Badge tone={map[status] || 'neutral'}>{status.replace('_', ' ')}</Badge>;
+function fmtMeter(meter) {
+  if (!meter) return null;
+  const u = meter.unit === 'miles' ? 'mi' : 'hr';
+  return `${meter.value.toLocaleString()} ${u}`;
 }
 
-function WorkOrderRow({ wo }) {
+function ApprovalPill({ status }) {
+  const map = {
+    pending_review: { tone: 'warning', label: 'pending review' },
+    approved: { tone: 'success', label: 'approved' },
+    rejected: { tone: 'danger', label: 'rejected' },
+  };
+  const { tone, label } = map[status] || { tone: 'neutral', label: status };
+  return <Badge tone={tone}>{label}</Badge>;
+}
+
+function ItemStatusIcon({ status }) {
+  if (status === 'done') return <CheckCircle2 size={14} className="text-success" />;
+  if (status === 'skipped') return <XCircle size={14} className="text-muted-foreground" />;
+  return <Clock size={14} className="text-warning" />;
+}
+
+function SourceBadge({ source }) {
+  if (source === 'issue') return <Badge tone="warning">issue</Badge>;
+  if (source === 'pm_schedule') return <Badge tone="accent">PM</Badge>;
+  if (source === 'campaign_assignment') return <Badge tone="accent">campaign</Badge>;
+  return <Badge tone="neutral">ad-hoc</Badge>;
+}
+
+// --- Issue row -------------------------------------------------------------
+function IssueRow({ issue }) {
   return (
     <Card interactive className="p-4">
       <div className="flex items-baseline justify-between gap-3">
         <h3 className="text-base font-semibold text-foreground leading-snug">
-          {wo.title || '(no title)'}
+          {issue.title}
+        </h3>
+        <span className="text-xs text-muted-foreground whitespace-nowrap">
+          {relativeTime(issue.reported_at)}
+        </span>
+      </div>
+      <p className="mt-1 text-[11px] text-muted-foreground">
+        <span className="font-mono">ISS-{issue.id.slice(0, 8)}</span>
+        <span className="mx-1.5">·</span>
+        {issue.reporter?.full_name || '?'}
+        <span className="mx-1.5">·</span>
+        <span className="capitalize">{issue.status.replace('_', ' ')}</span>
+      </p>
+      {issue.description && (
+        <p className="mt-3 text-sm text-foreground/85 whitespace-pre-wrap leading-relaxed">
+          {issue.description}
+        </p>
+      )}
+      {issue.raw_input && issue.raw_input !== issue.description && (
+        <p className="mt-2 text-[12px] text-muted-foreground italic leading-relaxed">
+          "{issue.raw_input}"
+        </p>
+      )}
+    </Card>
+  );
+}
+
+// --- WO row (with items) ---------------------------------------------------
+function WorkOrderRow({ wo }) {
+  const meter = fmtMeter(wo.opening_meter);
+  return (
+    <Card interactive className="p-4">
+      <div className="flex items-baseline justify-between gap-3 mb-1">
+        <h3 className="text-base font-semibold text-foreground leading-snug">
+          WO-{wo.id.slice(0, 8)}
+          {wo.summary ? <span className="text-foreground/75"> — {wo.summary}</span> : null}
         </h3>
         <span className="text-xs text-muted-foreground whitespace-nowrap">
           {relativeTime(wo.started_at)}
         </span>
       </div>
-      <p className="mt-1 text-[11px] text-muted-foreground">
-        <span className="font-mono">WO-{wo.id.slice(0, 8)}</span>
-        <span className="mx-1.5">·</span>
-        {wo.type}
-        <span className="mx-1.5">·</span>
-        {wo.user?.full_name || '?'}
-      </p>
+      <div className="flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">
+        <span>{wo.user?.full_name || '?'}</span>
+        {meter && (
+          <>
+            <span>·</span>
+            <span className="inline-flex items-center gap-1">
+              <Gauge size={11} /> {meter}
+            </span>
+          </>
+        )}
+        <span>·</span>
+        <span className="capitalize">{wo.status.replace('_', ' ')}</span>
+      </div>
 
-      {wo.description && (
-        <p className="mt-3 text-sm text-foreground/85 whitespace-pre-wrap leading-relaxed">
-          {wo.description}
-        </p>
-      )}
-      {wo.raw_input && wo.raw_input !== wo.description && (
-        <p className="mt-2 text-[12px] text-muted-foreground italic leading-relaxed">
-          "{wo.raw_input}"
-        </p>
+      {wo.items?.length > 0 && (
+        <ul className="mt-3 space-y-1.5">
+          {wo.items.map((it) => (
+            <li
+              key={it.id}
+              className="flex items-start gap-2 text-sm text-foreground/90"
+            >
+              <span className="mt-0.5">
+                <ItemStatusIcon status={it.status} />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-medium">{it.title}</span>
+                  <SourceBadge source={it.source} />
+                  <Badge tone="neutral">{it.type}</Badge>
+                </div>
+                {it.description && (
+                  <p className="mt-0.5 text-xs text-foreground/75">{it.description}</p>
+                )}
+                {it.notes && (
+                  <p className="mt-0.5 text-xs text-muted-foreground italic">
+                    "{it.notes}"
+                  </p>
+                )}
+                {it.skipped_reason && (
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    skipped: {it.skipped_reason}
+                  </p>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
       )}
 
       {wo.action_photos?.length > 0 && (
@@ -100,18 +197,28 @@ function WorkOrderRow({ wo }) {
         </div>
       )}
 
-      <div className="mt-3 flex items-center gap-2">
-        <StatusPill status={wo.status} />
+      <div className="mt-3 flex items-center gap-2 flex-wrap">
+        <ApprovalPill status={wo.approval_status} />
+        {wo.approval_notes && (
+          <span className="text-xs text-muted-foreground italic">
+            "{wo.approval_notes}"
+          </span>
+        )}
       </div>
     </Card>
   );
 }
 
-function Section({ title, tone, count, children }) {
+function Section({ title, tone, count, icon: Icon, children }) {
   return (
     <section className="mb-8">
       <div className="flex items-baseline gap-3 mb-3">
-        <SectionLabel tone={tone}>{title}</SectionLabel>
+        <SectionLabel tone={tone}>
+          <span className="inline-flex items-center gap-1.5">
+            {Icon ? <Icon size={12} /> : null}
+            {title}
+          </span>
+        </SectionLabel>
         <span className="text-xs text-muted-foreground">({count})</span>
       </div>
       {children}
@@ -127,38 +234,34 @@ export default function AssetHistory() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
 
-  useEffect(() => {
-    let alive = true;
-    async function load() {
-      setLoading(true);
-      setErr(null);
-      try {
-        const [aRes, wRes] = await Promise.all([
-          fetch(`${API_URL}/api/assets/${encodeURIComponent(unit)}`, {
-            headers: { Authorization: `Bearer ${session.access_token}` },
-          }),
-          fetch(`${API_URL}/api/assets/${encodeURIComponent(unit)}/work-orders`, {
-            headers: { Authorization: `Bearer ${session.access_token}` },
-          }),
-        ]);
-        if (!aRes.ok) throw new Error(`asset ${aRes.status}`);
-        if (!wRes.ok) throw new Error(`work-orders ${wRes.status}`);
-        const a = await aRes.json();
-        const w = await wRes.json();
-        if (!alive) return;
-        setAsset(a.asset);
-        setData(w);
-      } catch (e) {
-        if (alive) setErr(e.message);
-      } finally {
-        if (alive) setLoading(false);
-      }
+  const load = useCallback(async () => {
+    setLoading(true);
+    setErr(null);
+    try {
+      const [aRes, wRes] = await Promise.all([
+        fetch(`${API_URL}/api/assets/${encodeURIComponent(unit)}`, {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        }),
+        fetch(`${API_URL}/api/assets/${encodeURIComponent(unit)}/work-orders`, {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        }),
+      ]);
+      if (!aRes.ok) throw new Error(`asset ${aRes.status}`);
+      if (!wRes.ok) throw new Error(`work-orders ${wRes.status}`);
+      const a = await aRes.json();
+      const w = await wRes.json();
+      setAsset(a.asset);
+      setData(w);
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setLoading(false);
     }
-    load();
-    return () => {
-      alive = false;
-    };
   }, [unit, session.access_token]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -169,7 +272,6 @@ export default function AssetHistory() {
         sticky
       />
       <main className="mx-auto max-w-4xl px-4 py-6 md:py-10">
-        {/* Page title block */}
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
@@ -203,23 +305,12 @@ export default function AssetHistory() {
             <ReportIssueButton
               lockedAsset={unit.toUpperCase()}
               variant="compact"
-              onSubmitted={() => {
-                // Refresh the list so the new pending issue shows up
-                setData(null);
-                setLoading(true);
-                setErr(null);
-                // Trigger the effect by changing the URL? — simpler: reload via fetch.
-                // Easiest is to bounce loading state and let the effect re-run on session change.
-                // For now: just push the user toward visible feedback.
-                window.location.reload();
-              }}
+              onSubmitted={() => load()}
             />
           </div>
         </motion.div>
 
-        {loading && (
-          <p className="text-sm text-muted-foreground">Loading…</p>
-        )}
+        {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
         {err && (
           <Banner tone="danger" title="Couldn't load asset history">
             {err}
@@ -229,15 +320,33 @@ export default function AssetHistory() {
         {!loading && !err && data && (
           <>
             <Section
-              title="Pending review"
+              title="Open issues"
               tone="warning"
-              count={data.pending.length}
+              icon={AlertCircle}
+              count={data.open_issues?.length || 0}
             >
-              {data.pending.length === 0 ? (
+              {!data.open_issues?.length ? (
                 <p className="text-sm text-muted-foreground">None.</p>
               ) : (
                 <div className="space-y-3">
-                  {data.pending.map((w) => (
+                  {data.open_issues.map((i) => (
+                    <IssueRow key={i.id} issue={i} />
+                  ))}
+                </div>
+              )}
+            </Section>
+
+            <Section
+              title="Active work orders"
+              tone="accent"
+              icon={Wrench}
+              count={data.active_work_orders?.length || 0}
+            >
+              {!data.active_work_orders?.length ? (
+                <p className="text-sm text-muted-foreground">None in progress.</p>
+              ) : (
+                <div className="space-y-3">
+                  {data.active_work_orders.map((w) => (
                     <WorkOrderRow key={w.id} wo={w} />
                   ))}
                 </div>
@@ -245,30 +354,31 @@ export default function AssetHistory() {
             </Section>
 
             <Section
-              title="Approved"
+              title="Completed"
               tone="success"
-              count={data.approved.length}
+              icon={CheckCircle2}
+              count={data.completed_work_orders?.length || 0}
             >
-              {data.approved.length === 0 ? (
-                <p className="text-sm text-muted-foreground">None yet.</p>
+              {!data.completed_work_orders?.length ? (
+                <p className="text-sm text-muted-foreground">No completed WOs yet.</p>
               ) : (
                 <div className="space-y-3">
-                  {data.approved.map((w) => (
+                  {data.completed_work_orders.map((w) => (
                     <WorkOrderRow key={w.id} wo={w} />
                   ))}
                 </div>
               )}
             </Section>
 
-            {data.rejected.length > 0 && (
+            {data.closed_issues?.length > 0 && (
               <Section
-                title="Rejected"
-                tone="danger"
-                count={data.rejected.length}
+                title="Closed issues"
+                tone="neutral"
+                count={data.closed_issues.length}
               >
                 <div className="space-y-3">
-                  {data.rejected.map((w) => (
-                    <WorkOrderRow key={w.id} wo={w} />
+                  {data.closed_issues.map((i) => (
+                    <IssueRow key={i.id} issue={i} />
                   ))}
                 </div>
               </Section>

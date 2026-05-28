@@ -1,10 +1,14 @@
 // Report Issue — focused modal for fast issue submission.
-// Skips the chat / Claude entirely; posts directly to /api/work-orders.
+// Skips the chat / Claude entirely; posts directly to /api/issues.
+//
+// Post-redesign: issues live in their own table. They are NOT work orders;
+// a tech later opens a WO on the asset and picks the issue from the
+// pending list as one of the items.
 //
 // Props:
 //   open, onClose
 //   lockedAsset?   if provided, asset_unit_number is fixed (no picker)
-//   onSubmitted?   called with the created WO
+//   onSubmitted?   called with the created issue
 
 import { useEffect, useRef, useState } from 'react';
 import { AlertCircle } from 'lucide-react';
@@ -109,7 +113,7 @@ export default function ReportIssueModal({
 
     setBusy(true);
     try {
-      const res = await fetch(`${API_URL}/api/work-orders`, {
+      const res = await fetch(`${API_URL}/api/issues`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -117,7 +121,6 @@ export default function ReportIssueModal({
         },
         body: JSON.stringify({
           asset_unit_number: assetUnit.trim().toUpperCase(),
-          type: 'issue',
           title: title.trim(),
           description: description.trim() || null,
           raw_input: description.trim() || title.trim(),
@@ -129,9 +132,9 @@ export default function ReportIssueModal({
       pushToast({
         tone: 'success',
         title: 'Issue logged',
-        text: `WO-${data.work_order.short_id} on ${data.work_order.asset_unit_number}`,
+        text: `ISS-${data.issue.short_id} on ${data.issue.asset_unit_number}`,
       });
-      onSubmitted?.(data.work_order);
+      onSubmitted?.(data.issue);
       onClose?.();
     } catch (e) {
       setErr(e.message);
@@ -147,7 +150,7 @@ export default function ReportIssueModal({
       open={open}
       onClose={onClose}
       title="Report an issue"
-      description="Fast path — no chat, no AI. Goes straight to the admin review queue."
+      description="Fast path — no chat, no AI. Goes into the pending list for the next tech who opens a WO on this asset."
       maxWidth="lg"
       footer={
         <ModalActions onCancel={onClose}>

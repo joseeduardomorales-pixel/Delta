@@ -29,6 +29,7 @@ function AdminNav({ onClick, mobile = false }) {
   const links = [
     { to: '/admin/work-orders/pending', label: 'Review queue' },
     { to: '/admin/pm-schedules', label: 'PM schedules' },
+    { to: '/admin/campaigns', label: 'Campaigns' },
     { to: '/admin/users', label: 'Users' },
   ];
   return (
