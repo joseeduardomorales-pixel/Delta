@@ -6,6 +6,45 @@ This file is the entry point for every Claude Code session on Delta. It has two 
 - **PROJECT CONTEXT** — what Delta is, the stack, current state, deferred work. Claude Code must update this whenever it adds modules, changes architecture, or alters conventions.
 
 # ═══════════════════════════════════════════════════════════════
+# ═══ PRE-GO-LIVE RESET ═══  (READ FIRST — testing phase)
+# ═══════════════════════════════════════════════════════════════
+
+**STATUS: We are in testing phase, NOT production.** All operational
+data currently in the database — work orders, work_order_items,
+issues, inspections, work_order_inspections, action_photos, meter
+readings created by inspections/WOs, and any conversations — is test
+data entered by Lalo (and any seed accounts) to exercise the UI.
+
+**Before flipping the switch to production**, the following tables
+must be truncated/cleaned so the real shop starts from zero:
+
+- `work_orders` (cascades items, inspections, action_photos via FK)
+- `work_order_items`
+- `work_order_inspections`
+- `action_photos`
+- `issues`
+- `conversations` + `conversation_messages`
+- `meter_readings` rows created by WO opens (telematics-synced rows
+  can stay; manual entries from test WOs should go)
+
+**What stays:**
+- `users` (real accounts — Lalo, Ivan, etc.)
+- `assets` (real fleet — 17 trucks + 22 reefers from Alvys)
+- `pm_schedules` (real PM cadences)
+- `inspection_templates` + `inspection_template_items` (the reefer
+  trailer checklist is real config, not test data)
+- `campaigns` + `campaign_assignments` (if any are real)
+
+**How we'll do it:**
+- Write a single migration / one-off script: `db/scripts/reset_pre_go_live.mjs`
+- Lalo runs it manually after final QA, before shop-wide rollout.
+- The display_seq counters (user handles, WO/issue/inspection numbers)
+  reset too, so the first real WO is `WO-<handle>-0001` again.
+
+Reminder rule: **never silently truncate without Lalo confirming "we
+are going live now."**
+
+# ═══════════════════════════════════════════════════════════════
 # ═══ PROTOCOL ═══  (Team Charter & Execution Protocol)
 # ═══════════════════════════════════════════════════════════════
 
