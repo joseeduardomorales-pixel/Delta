@@ -22,6 +22,7 @@
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { getSupabaseAdmin } from '../services/supabaseAdmin.js';
+import { attachStagingToWorkOrder } from '../services/storage.js';
 import { logger } from '../logger.js';
 
 export const inspectionsRouter = Router();
@@ -273,8 +274,13 @@ inspectionsRouter.patch(
   requireAuth,
   async (req, res) => {
     try {
-      const { inspection_result, notes, measurement_value, measurement_text } =
-        req.body || {};
+      const {
+        inspection_result,
+        notes,
+        measurement_value,
+        measurement_text,
+        attachments, // optional array of { staging_path }
+      } = req.body || {};
       if (!['pass', 'fail', 'na', 'yes', 'no'].includes(inspection_result)) {
         return res.status(400).json({ error: 'invalid_inspection_result' });
       }
@@ -331,7 +337,28 @@ inspectionsRouter.patch(
           tk?.good_answer &&
           inspection_result !== tk.good_answer);
 
+      // Fails REQUIRE a description (notes) and at least one attached photo.
+      // Cap at 4 photos.
+      const photoList = Array.isArray(attachments)
+        ? attachments.filter((a) => a?.staging_path).slice(0, 4)
+        : [];
+      if (isFail) {
+        if (typeof notes !== 'string' || notes.trim().length < 3) {
+          return res.status(400).json({
+            error: 'description_required',
+            message: 'A description of the issue is required (3+ chars).',
+          });
+        }
+        if (photoList.length < 1) {
+          return res.status(400).json({
+            error: 'photo_required',
+            message: 'At least one photo is required for an issue.',
+          });
+        }
+      }
+
       let createdIssue = null;
+      const attachedPhotos = [];
       if (isFail) {
         // Resolve asset_unit_number for the parent WO.
         const { data: wo } = await admin
@@ -361,9 +388,30 @@ inspectionsRouter.patch(
         createdIssue = iss
           ? { id: iss.id, short_id: iss.id.slice(0, 8), title: iss.title }
           : null;
+
+        // Move each staged photo to permanent storage on the parent WO,
+        // captioned with the failing item title so it's findable on the
+        // kardex. Skips silently on per-photo errors so a single bad
+        // upload doesn't lose the inspection state we already saved.
+        for (const a of photoList) {
+          try {
+            const photo = await attachStagingToWorkOrder({
+              stagingPath: a.staging_path,
+              workOrderId: insp.work_order_id,
+              uploadedBy: req.user.id,
+              caption: `Inspection issue — ${item.title}`,
+            });
+            attachedPhotos.push({ id: photo.id });
+          } catch (e) {
+            logger.warn(
+              { err: e.message, staging_path: a.staging_path, item_id: item.id },
+              'inspection fail: photo attach failed',
+            );
+          }
+        }
       }
 
-      res.json({ item: after, created_issue: createdIssue });
+      res.json({ item: after, created_issue: createdIssue, attached_photos: attachedPhotos });
     } catch (e) {
       logger.error({ err: e.message }, 'patch inspection item: unhandled');
       res.status(500).json({ error: 'patch_failed' });

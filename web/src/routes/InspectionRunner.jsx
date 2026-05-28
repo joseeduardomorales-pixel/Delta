@@ -1,12 +1,13 @@
 // /work-orders/:woId/inspect/:inspectionId — checklist walker.
 //
-// Loads an inspection (created via /api/work-orders/:woId/inspections),
-// renders it grouped by section, lets the tech tap PASS / FAIL / N/A for
-// each item. Failures get a comment field + photo. At the bottom: the
-// three FINAL ASSESSMENT yes/no questions + a submit button that signs
-// the inspection.
+// Tech walks the asset and marks each item OK / Issue / N/A.
+//   OK     → result='pass' (or 'yes' for yes/no items where the good answer is yes)
+//   Issue  → opens a modal that REQUIRES a description AND at least one photo
+//             (max 4). On submit, the server records the fail, auto-creates
+//             an open issue on the asset, and attaches the photos to the WO.
+//   N/A    → result='na'; only available on pass/fail items.
 
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -18,9 +19,12 @@ import {
   AlertTriangle,
   CheckCircle2,
   ClipboardCheck,
+  ImageOff,
+  Camera,
 } from 'lucide-react';
 import { useAuth } from '../auth/AuthProvider.jsx';
 import { API_URL } from '../lib/supabase.js';
+import { uploadPhotos } from '../lib/upload.js';
 import {
   Header,
   Card,
@@ -37,192 +41,398 @@ import { cn } from '../lib/cn.js';
 import { woLabel, inspectionLabel } from '../lib/numbers.js';
 
 const easeOut = [0.16, 1, 0.3, 1];
+const MAX_PHOTOS = 4;
 
-// ── One row per inspection item ─────────────────────────────────────────────
-function ItemRow({ item, onResult, busy }) {
-  const tpl = item.template_item || {};
-  const isYesNo = tpl.kind === 'yes_no';
+// ── Issue (fail) modal ──────────────────────────────────────────────────────
+// Description AND at least one photo (max 4) are both REQUIRED before submit.
+function IssueModal({ open, item, onClose, onConfirm, busy, accessToken }) {
+  const tpl = item?.template_item || {};
   const isMeasurement = tpl.kind === 'measurement';
-  const [open, setOpen] = useState(false);
-  const [notes, setNotes] = useState(item.notes || '');
-  const [measurement, setMeasurement] = useState(item.measurement_value ?? '');
+  const isYesNo = tpl.kind === 'yes_no';
 
-  const result = item.inspection_result;
-  // Visual state mapping.
-  const failed = isYesNo
-    ? tpl.good_answer && result && result !== tpl.good_answer
-    : result === 'fail';
-  const passed = isYesNo
-    ? tpl.good_answer && result === tpl.good_answer
-    : result === 'pass';
-  const skipped = result === 'na';
+  const [notes, setNotes] = useState('');
+  const [measurement, setMeasurement] = useState('');
+  const [photos, setPhotos] = useState([]); // {localId, file, previewUrl, status, staging_path?}
+  const [submitErr, setSubmitErr] = useState(null);
+  const nextId = useRef(1);
 
-  async function submit(value) {
-    const payload = { inspection_result: value };
-    if (notes.trim()) payload.notes = notes.trim();
+  useEffect(() => {
+    if (open) {
+      setNotes('');
+      setMeasurement('');
+      setPhotos([]);
+      setSubmitErr(null);
+    } else {
+      // Cleanup any leftover object URLs.
+      for (const p of photos) {
+        if (p.previewUrl) URL.revokeObjectURL(p.previewUrl);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  async function onFiles(files) {
+    const remaining = MAX_PHOTOS - photos.length;
+    if (remaining <= 0) return;
+    const next = Array.from(files)
+      .slice(0, remaining)
+      .map((f) => ({
+        localId: String(nextId.current++),
+        file: f,
+        previewUrl: URL.createObjectURL(f),
+        status: 'uploading',
+      }));
+    setPhotos((curr) => [...curr, ...next]);
+    for (const p of next) {
+      try {
+        const { uploads } = await uploadPhotos({ files: [p.file], accessToken });
+        const u = uploads[0];
+        if (!u) throw new Error('upload rejected');
+        setPhotos((curr) =>
+          curr.map((x) =>
+            x.localId === p.localId
+              ? { ...x, status: 'uploaded', staging_path: u.staging_path }
+              : x,
+          ),
+        );
+      } catch {
+        setPhotos((curr) =>
+          curr.map((x) =>
+            x.localId === p.localId ? { ...x, status: 'failed' } : x,
+          ),
+        );
+      }
+    }
+  }
+
+  function removePhoto(localId) {
+    setPhotos((curr) => {
+      const p = curr.find((x) => x.localId === localId);
+      if (p?.previewUrl) URL.revokeObjectURL(p.previewUrl);
+      return curr.filter((x) => x.localId !== localId);
+    });
+  }
+
+  const uploadedCount = photos.filter((p) => p.status === 'uploaded').length;
+  const anyUploading = photos.some((p) => p.status === 'uploading');
+  const descOk = notes.trim().length >= 3;
+  const photosOk = uploadedCount >= 1;
+  const canSubmit = descOk && photosOk && !anyUploading && !busy;
+
+  async function submit() {
+    setSubmitErr(null);
+    if (!canSubmit) return;
+    const result = isYesNo ? 'no' : 'fail';
+    const payload = {
+      inspection_result: result,
+      notes: notes.trim(),
+      attachments: photos
+        .filter((p) => p.status === 'uploaded' && p.staging_path)
+        .map((p) => ({ staging_path: p.staging_path })),
+    };
     if (isMeasurement && measurement !== '') {
       const n = Number(measurement);
       if (Number.isFinite(n)) payload.measurement_value = n;
     }
-    await onResult(item.id, payload);
-    setOpen(false);
+    try {
+      await onConfirm(item.id, payload);
+    } catch (e) {
+      setSubmitErr(e.message);
+    }
   }
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      destructive
+      maxWidth="lg"
+      title="Report an issue"
+      description="An open issue will be created on this asset and the next tech will see it. A description and at least one photo are required."
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="danger" onClick={submit} loading={busy} disabled={!canSubmit}>
+            <X size={16} /> Record issue
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        {/* The item being failed — read-only context */}
+        <div className="rounded-lg border border-border bg-muted/40 px-4 py-3">
+          <p className="text-[10px] uppercase tracking-widest text-muted-foreground">
+            Item
+          </p>
+          <p className="mt-0.5 text-sm font-medium text-foreground leading-snug">
+            {item?.title}
+          </p>
+        </div>
+
+        {isMeasurement && (
+          <Input
+            label={`Measured value${tpl.measurement_unit ? ` (${tpl.measurement_unit})` : ''}`}
+            type="number"
+            value={measurement}
+            onChange={(e) => setMeasurement(e.target.value)}
+          />
+        )}
+
+        <Textarea
+          label="What's wrong?"
+          required
+          rows={4}
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          placeholder="e.g. Crack on right corner of display, intermittent flicker, missing bolt on left bracket"
+          autoFocus
+          helper={
+            notes.trim().length < 3
+              ? 'Add a short description — at least 3 characters.'
+              : null
+          }
+        />
+
+        {/* Photo grid: capture/upload + previews + counter */}
+        <div>
+          <div className="flex items-baseline justify-between mb-2">
+            <div className="text-xs font-medium text-muted-foreground">
+              Photos <span className="text-danger">(required, at least 1)</span>
+            </div>
+            <span className="text-[11px] text-muted-foreground">
+              {uploadedCount}/{MAX_PHOTOS}
+            </span>
+          </div>
+          <div className="grid grid-cols-4 gap-2">
+            {photos.map((p) => (
+              <div
+                key={p.localId}
+                className={cn(
+                  'relative aspect-square rounded-lg overflow-hidden border',
+                  p.status === 'uploaded' && 'border-success/50',
+                  p.status === 'uploading' && 'border-border',
+                  p.status === 'failed' && 'border-danger/60',
+                )}
+              >
+                {p.previewUrl ? (
+                  <img
+                    src={p.previewUrl}
+                    alt=""
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="w-full h-full bg-muted flex items-center justify-center text-muted-foreground">
+                    <ImageOff size={20} />
+                  </div>
+                )}
+                {p.status === 'uploading' && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-foreground/40">
+                    <Loader2 size={18} className="animate-spin text-white" />
+                  </div>
+                )}
+                {p.status === 'failed' && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-danger/70 text-white text-[10px] uppercase tracking-wider">
+                    failed
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => removePhoto(p.localId)}
+                  className="absolute top-1 right-1 inline-flex h-6 w-6 items-center justify-center rounded-full bg-foreground/70 text-background hover:bg-foreground"
+                  aria-label="Remove photo"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+            {photos.length < MAX_PHOTOS && (
+              <label
+                className={cn(
+                  'aspect-square rounded-lg border-2 border-dashed border-border',
+                  'flex flex-col items-center justify-center gap-1',
+                  'text-muted-foreground hover:border-accent/50 hover:text-accent',
+                  'cursor-pointer transition-colors',
+                )}
+              >
+                <Camera size={20} />
+                <span className="text-[10px] uppercase tracking-wider">
+                  Add photo
+                </span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  multiple
+                  className="sr-only"
+                  onChange={(e) => {
+                    const files = Array.from(e.target.files || []);
+                    e.target.value = '';
+                    if (files.length) onFiles(files);
+                  }}
+                />
+              </label>
+            )}
+          </div>
+          {!photosOk && (
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              Take a photo with the camera or pick one from the library.
+            </p>
+          )}
+        </div>
+
+        {submitErr && (
+          <Banner tone="danger" title="Couldn't save issue">
+            {submitErr}
+          </Banner>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+// ── One row per inspection item ─────────────────────────────────────────────
+function ItemRow({ item, onMark, onOpenIssue, busy }) {
+  const tpl = item.template_item || {};
+  const isYesNo = tpl.kind === 'yes_no';
+  const result = item.inspection_result;
+
+  const failed =
+    result === 'fail' ||
+    result === 'no' ||
+    (isYesNo && tpl.good_answer && result && result !== tpl.good_answer);
+  const passed =
+    result === 'pass' ||
+    (isYesNo && tpl.good_answer && result === tpl.good_answer);
+  const skipped = result === 'na';
 
   return (
     <div
       className={cn(
-        'rounded-md border px-3 py-2.5 transition-colors',
-        passed && 'border-success/40 bg-success-bg/40',
-        failed && 'border-danger/40 bg-danger-bg/40',
+        'rounded-lg border px-4 py-3.5 transition-colors',
+        passed && 'border-success/40 bg-success-bg/30',
+        failed && 'border-danger/40 bg-danger-bg/30',
         skipped && 'border-border bg-muted/30 opacity-70',
         !result && 'border-border bg-card',
       )}
     >
-      <div className="flex items-start gap-3">
+      <div className="flex items-start gap-3 sm:gap-4">
         <div className="flex-1 min-w-0">
-          <p className="text-sm text-foreground leading-snug">{item.title}</p>
+          <p className="text-[15px] sm:text-base text-foreground leading-snug">
+            {item.title}
+          </p>
           {tpl.measurement_unit && (
-            <p className="text-[11px] text-muted-foreground mt-0.5">
+            <p className="text-[11px] text-muted-foreground mt-1">
               Measurement: {tpl.measurement_unit}
               {tpl.measurement_min != null && ` · min ${tpl.measurement_min}`}
               {tpl.measurement_max != null && ` · max ${tpl.measurement_max}`}
             </p>
           )}
           {item.notes && (
-            <p className="text-xs text-muted-foreground italic mt-1">
+            <p className="mt-1.5 text-xs text-muted-foreground italic">
               "{item.notes}"
             </p>
           )}
           {item.measurement_value != null && (
-            <p className="text-xs text-foreground mt-1">
+            <p className="mt-1 text-xs text-foreground">
               Value: {item.measurement_value}
               {tpl.measurement_unit ? ` ${tpl.measurement_unit}` : ''}
             </p>
           )}
         </div>
-        <div className="flex items-center gap-1 shrink-0">
+        <div className="flex items-center gap-1.5 shrink-0">
           {isYesNo ? (
             <>
-              <ResultButton
+              <BigButton
                 tone="success"
                 active={result === 'yes'}
-                onClick={() => onResult(item.id, { inspection_result: 'yes' })}
+                onClick={() => onMark(item.id, { inspection_result: 'yes' })}
                 disabled={busy}
+                aria-label="Yes"
               >
-                YES
-              </ResultButton>
-              <ResultButton
+                <Check size={18} strokeWidth={3} />
+                <span className="ml-1 text-[11px] font-bold">YES</span>
+              </BigButton>
+              <BigButton
                 tone="danger"
                 active={result === 'no'}
-                onClick={() => setOpen(true)}
+                onClick={() => onOpenIssue(item)}
                 disabled={busy}
+                aria-label="No — report issue"
               >
-                NO
-              </ResultButton>
+                <X size={18} strokeWidth={3} />
+                <span className="ml-1 text-[11px] font-bold">NO</span>
+              </BigButton>
             </>
           ) : (
             <>
-              <ResultButton
+              <BigButton
                 tone="success"
                 active={passed}
-                onClick={() => onResult(item.id, { inspection_result: 'pass' })}
+                onClick={() => onMark(item.id, { inspection_result: 'pass' })}
                 disabled={busy}
-                title="Pass"
+                aria-label="OK"
+                title="OK"
               >
-                <Check size={16} />
-              </ResultButton>
-              <ResultButton
+                <Check size={18} strokeWidth={3} />
+                <span className="ml-1 text-[11px] font-bold">OK</span>
+              </BigButton>
+              <BigButton
                 tone="danger"
                 active={failed}
-                onClick={() => setOpen(true)}
+                onClick={() => onOpenIssue(item)}
                 disabled={busy}
-                title="Fail"
+                aria-label="Issue"
+                title="Issue"
               >
-                <X size={16} />
-              </ResultButton>
-              <ResultButton
+                <X size={18} strokeWidth={3} />
+                <span className="ml-1 text-[11px] font-bold">ISSUE</span>
+              </BigButton>
+              <BigButton
                 tone="neutral"
                 active={skipped}
-                onClick={() => onResult(item.id, { inspection_result: 'na' })}
+                onClick={() => onMark(item.id, { inspection_result: 'na' })}
                 disabled={busy}
-                title="N/A"
+                aria-label="N/A"
+                title="Not applicable"
               >
-                <Minus size={16} />
-              </ResultButton>
+                <Minus size={18} strokeWidth={3} />
+                <span className="ml-1 text-[11px] font-bold">N/A</span>
+              </BigButton>
             </>
           )}
         </div>
       </div>
-
-      {/* Fail modal */}
-      <Modal
-        open={open}
-        onClose={() => setOpen(false)}
-        title={`Fail — ${item.title}`}
-        description="Capture what's wrong. This will be the body of an auto-created issue on the asset."
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setOpen(false)} disabled={busy}>
-              Cancel
-            </Button>
-            <Button
-              variant="danger"
-              onClick={() => submit(isYesNo ? 'no' : 'fail')}
-              loading={busy}
-            >
-              Record fail
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-3">
-          {isMeasurement && (
-            <Input
-              label={`Measured value (${tpl.measurement_unit || ''})`}
-              type="number"
-              value={measurement}
-              onChange={(e) => setMeasurement(e.target.value)}
-            />
-          )}
-          <Textarea
-            label="What's wrong?"
-            placeholder="e.g. crack on right corner, display flickers, missing bracket"
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            rows={3}
-            autoFocus
-          />
-        </div>
-      </Modal>
     </div>
   );
 }
 
-function ResultButton({ tone, active, onClick, disabled, children, title }) {
+function BigButton({ tone, active, children, ...props }) {
   const toneClasses = {
     success: active
-      ? 'bg-success text-white border-success'
-      : 'border-border text-success hover:bg-success-bg',
+      ? 'bg-success text-white border-success shadow-sm'
+      : 'border-border text-success hover:bg-success-bg hover:border-success/40',
     danger: active
-      ? 'bg-danger text-white border-danger'
-      : 'border-border text-danger hover:bg-danger-bg',
+      ? 'bg-danger text-white border-danger shadow-sm'
+      : 'border-border text-danger hover:bg-danger-bg hover:border-danger/40',
     neutral: active
-      ? 'bg-muted-foreground text-background border-muted-foreground'
-      : 'border-border text-muted-foreground hover:bg-muted',
+      ? 'bg-muted-foreground text-background border-muted-foreground shadow-sm'
+      : 'border-border text-muted-foreground hover:bg-muted hover:border-muted-foreground/40',
   };
   return (
     <button
       type="button"
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
       className={cn(
-        'inline-flex items-center justify-center gap-1',
-        'min-w-[2.5rem] h-9 px-2 rounded-md border text-xs font-semibold',
-        'transition-colors',
+        'inline-flex items-center justify-center',
+        'min-w-[3.25rem] sm:min-w-[3.75rem] h-11 sm:h-12 px-2 sm:px-2.5',
+        'rounded-lg border-2',
+        'transition-all duration-base ease-out-soft',
         'disabled:opacity-50 disabled:cursor-not-allowed',
+        'active:scale-[0.96]',
         toneClasses[tone],
       )}
+      {...props}
     >
       {children}
     </button>
@@ -240,6 +450,7 @@ export default function InspectionRunner() {
   const [err, setErr] = useState(null);
   const [busyItemId, setBusyItemId] = useState(null);
   const [finalizing, setFinalizing] = useState(false);
+  const [issueFor, setIssueFor] = useState(null); // item currently being failed
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -262,7 +473,7 @@ export default function InspectionRunner() {
     load();
   }, [load]);
 
-  async function onResult(itemId, payload) {
+  async function mark(itemId, payload) {
     setBusyItemId(itemId);
     try {
       const r = await fetch(
@@ -276,36 +487,43 @@ export default function InspectionRunner() {
           body: JSON.stringify(payload),
         },
       );
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const resp = await r.json();
+      if (!r.ok) {
+        throw new Error(resp.message || resp.error || `HTTP ${r.status}`);
+      }
       if (resp.created_issue) {
         pushToast({
           tone: 'warning',
-          title: 'Issue created from fail',
-          text: `ISS-${resp.created_issue.short_id} on this asset.`,
+          title: 'Issue created',
+          text: `${resp.created_issue.title} — logged on this asset.`,
         });
       }
-      // Patch the local state with the updated item.
+      // Patch local state with the updated item.
       setData((d) => {
         if (!d) return d;
-        const next = { ...d, sections: d.sections.map((s) => ({
-          ...s,
-          items: s.items.map((i) =>
-            i.id === itemId
-              ? {
-                  ...i,
-                  inspection_result: resp.item.inspection_result,
-                  status: resp.item.status,
-                  completed_at: resp.item.completed_at,
-                  notes: resp.item.notes ?? i.notes,
-                }
-              : i,
-          ),
-        })) };
-        return next;
+        return {
+          ...d,
+          sections: d.sections.map((s) => ({
+            ...s,
+            items: s.items.map((i) =>
+              i.id === itemId
+                ? {
+                    ...i,
+                    inspection_result: resp.item.inspection_result,
+                    status: resp.item.status,
+                    completed_at: resp.item.completed_at,
+                    notes: resp.item.notes ?? i.notes,
+                  }
+                : i,
+            ),
+          })),
+        };
       });
+      // Close the issue modal if it was open for this item.
+      setIssueFor((cur) => (cur?.id === itemId ? null : cur));
     } catch (e) {
       pushToast({ tone: 'danger', title: 'Save failed', text: e.message });
+      throw e;
     } finally {
       setBusyItemId(null);
     }
@@ -314,14 +532,19 @@ export default function InspectionRunner() {
   // Progress + counts
   const counts = useMemo(() => {
     if (!data) return { total: 0, done: 0, pass: 0, fail: 0, na: 0 };
-    let total = 0, done = 0, pass = 0, fail = 0, na = 0;
+    let total = 0,
+      done = 0,
+      pass = 0,
+      fail = 0,
+      na = 0;
     for (const s of data.sections) {
       for (const i of s.items) {
         total += 1;
         if (i.inspection_result) done += 1;
         const tpl = i.template_item || {};
         if (tpl.kind === 'yes_no') {
-          if (tpl.good_answer && i.inspection_result && i.inspection_result !== tpl.good_answer) fail += 1;
+          if (tpl.good_answer && i.inspection_result && i.inspection_result !== tpl.good_answer)
+            fail += 1;
           else if (tpl.good_answer && i.inspection_result === tpl.good_answer) pass += 1;
         } else {
           if (i.inspection_result === 'pass') pass += 1;
@@ -353,7 +576,7 @@ export default function InspectionRunner() {
       pushToast({
         tone: 'success',
         title: 'Inspection complete',
-        text: `${resp.counts?.pass || 0} pass · ${(resp.counts?.fail || 0) + (resp.counts?.no || 0)} fail · ${resp.counts?.na || 0} N/A`,
+        text: `${resp.counts?.pass || 0} OK · ${(resp.counts?.fail || 0) + (resp.counts?.no || 0)} issues · ${resp.counts?.na || 0} N/A`,
       });
       const unit = data?.inspection?.work_order?.asset_unit_number;
       if (unit) navigate(`/assets/${encodeURIComponent(unit)}`);
@@ -384,8 +607,6 @@ export default function InspectionRunner() {
           transition={{ duration: 0.5, ease: easeOut }}
           className="mb-6"
         >
-          {/* "/work-orders/:woId" isn't a route — back-link to the asset
-              kardex (where the WO + its inspection both surface). */}
           <Link
             to={
               data?.inspection?.work_order?.asset_unit_number
@@ -396,23 +617,24 @@ export default function InspectionRunner() {
           >
             <ChevronLeft size={14} />
             <span className="uppercase tracking-widest">
-              Back to{' '}
-              {data?.inspection?.work_order?.asset_unit_number || 'work orders'}
+              Back to {data?.inspection?.work_order?.asset_unit_number || 'work orders'}
             </span>
           </Link>
-          <h1 className="mt-2 font-display text-2xl md:text-3xl tracking-tight">
+          <h1 className="mt-2 font-display text-3xl md:text-4xl tracking-tight leading-tight">
             {data?.inspection?.template?.name || 'Inspection'}
           </h1>
           {data?.inspection?.work_order && (
-            <p className="mt-1 text-sm text-muted-foreground">
-              <span className="font-mono">{data.inspection.work_order.asset_unit_number}</span>
-              <span className="mx-2">·</span>
+            <p className="mt-2 text-sm text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="font-mono text-foreground">
+                {data.inspection.work_order.asset_unit_number}
+              </span>
+              <span>·</span>
               <span className="font-mono">
                 {woLabel(data.inspection.work_order, {
                   handle: data.inspection.work_order.user?.handle,
                 })}
               </span>
-              <span className="mx-2">·</span>
+              <span>·</span>
               <span className="font-mono">{inspectionLabel(data.inspection)}</span>
             </p>
           )}
@@ -433,19 +655,19 @@ export default function InspectionRunner() {
         {!loading && !err && data && (
           <>
             {/* Sticky progress bar */}
-            <div className="sticky top-14 md:top-16 -mx-4 md:mx-0 px-4 md:px-0 py-3 mb-4 z-30 bg-background/95 backdrop-blur border-b border-border md:border md:rounded-xl md:bg-card md:shadow-sm md:p-4">
+            <div className="sticky top-14 md:top-16 -mx-4 md:mx-0 px-4 md:px-5 py-3 mb-6 z-30 bg-background/95 backdrop-blur border-b border-border md:border md:rounded-xl md:bg-card md:shadow-sm">
               <div className="flex items-center justify-between text-xs mb-2 flex-wrap gap-2">
                 <div className="flex items-center gap-3">
-                  <span>
+                  <span className="text-foreground">
                     <span className="font-semibold">{counts.done}</span>/{counts.total} done
                   </span>
-                  <span className="text-success">{counts.pass} pass</span>
-                  <span className="text-danger">{counts.fail} fail</span>
+                  <span className="text-success">{counts.pass} OK</span>
+                  <span className="text-danger">{counts.fail} issues</span>
                   <span className="text-muted-foreground">{counts.na} N/A</span>
                 </div>
-                <span className="text-muted-foreground">{pct}%</span>
+                <span className="text-muted-foreground font-mono">{pct}%</span>
               </div>
-              <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+              <div className="h-2 bg-muted rounded-full overflow-hidden">
                 <div
                   className={cn(
                     'h-full transition-all',
@@ -456,27 +678,51 @@ export default function InspectionRunner() {
               </div>
             </div>
 
-            {/* Sections */}
-            <div className="space-y-6">
-              {data.sections.map((sec) => (
-                <section key={sec.section}>
-                  <SectionLabel tone="accent">{sec.section}</SectionLabel>
-                  <div className="mt-3 space-y-2">
-                    {sec.items.map((it) => (
-                      <ItemRow
-                        key={it.id}
-                        item={it}
-                        onResult={onResult}
-                        busy={busyItemId === it.id}
-                      />
-                    ))}
-                  </div>
-                </section>
-              ))}
+            {/* Sections — each gets a clear, larger heading with its own item count */}
+            <div className="space-y-10">
+              {data.sections.map((sec) => {
+                const sectionDone = sec.items.filter((i) => i.inspection_result).length;
+                const sectionFail = sec.items.filter(
+                  (i) =>
+                    i.inspection_result === 'fail' ||
+                    (i.template_item?.kind === 'yes_no' &&
+                      i.template_item?.good_answer &&
+                      i.inspection_result &&
+                      i.inspection_result !== i.template_item.good_answer),
+                ).length;
+                return (
+                  <section key={sec.section}>
+                    <div className="mb-4 flex items-baseline justify-between gap-3 border-b border-border pb-2">
+                      <h2 className="font-display text-xl md:text-2xl tracking-tight">
+                        {sec.section}
+                      </h2>
+                      <span className="text-[11px] text-muted-foreground whitespace-nowrap">
+                        {sectionDone}/{sec.items.length}
+                        {sectionFail > 0 && (
+                          <span className="ml-2 text-danger font-medium">
+                            {sectionFail} issue{sectionFail === 1 ? '' : 's'}
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                    <div className="space-y-2.5">
+                      {sec.items.map((it) => (
+                        <ItemRow
+                          key={it.id}
+                          item={it}
+                          busy={busyItemId === it.id}
+                          onMark={mark}
+                          onOpenIssue={(item) => setIssueFor(item)}
+                        />
+                      ))}
+                    </div>
+                  </section>
+                );
+              })}
             </div>
 
             {/* Footer — finalize */}
-            <div className="mt-8 mb-12">
+            <div className="mt-10 mb-12">
               <Card className="p-5">
                 {isCompleted ? (
                   <div className="text-sm text-muted-foreground flex items-center gap-2">
@@ -486,23 +732,27 @@ export default function InspectionRunner() {
                   </div>
                 ) : (
                   <>
-                    <div className="flex items-baseline justify-between gap-3 mb-2">
+                    <div className="flex items-baseline justify-between gap-3 mb-2 flex-wrap">
                       <h2 className="font-display text-xl">Sign & submit</h2>
                       {counts.fail > 0 && (
                         <Badge tone="warning">
-                          {counts.fail} fail{counts.fail === 1 ? '' : 's'} → {counts.fail} new issue{counts.fail === 1 ? '' : 's'}
+                          {counts.fail} issue{counts.fail === 1 ? '' : 's'} logged on this asset
                         </Badge>
                       )}
                     </div>
                     <p className="text-sm text-muted-foreground">
-                      Tapping submit records your signature with a timestamp.
-                      Any failed items have already been logged as open issues on{' '}
-                      <span className="font-mono">{data.inspection.work_order?.asset_unit_number}</span>.
+                      Submitting signs the inspection with a timestamp. Any
+                      issues are already open on{' '}
+                      <span className="font-mono">
+                        {data.inspection.work_order?.asset_unit_number}
+                      </span>{' '}
+                      and visible to the next tech.
                     </p>
                     {!allDone && (
                       <div className="mt-3 flex items-center gap-2 text-xs text-warning">
                         <AlertTriangle size={14} />
-                        {counts.total - counts.done} item{counts.total - counts.done === 1 ? '' : 's'} still pending.
+                        {counts.total - counts.done} item
+                        {counts.total - counts.done === 1 ? '' : 's'} still pending.
                       </div>
                     )}
                     <div className="mt-4 flex justify-end">
@@ -522,6 +772,15 @@ export default function InspectionRunner() {
           </>
         )}
       </main>
+
+      <IssueModal
+        open={Boolean(issueFor)}
+        item={issueFor}
+        onClose={() => setIssueFor(null)}
+        onConfirm={mark}
+        busy={busyItemId === issueFor?.id}
+        accessToken={session.access_token}
+      />
     </div>
   );
 }
