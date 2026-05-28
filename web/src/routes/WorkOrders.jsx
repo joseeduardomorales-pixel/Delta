@@ -48,6 +48,58 @@ function relativeTime(iso) {
   return `${d}d ago`;
 }
 
+// "May 28, 4:22 PM" — drops the year when it matches the current year,
+// shows it otherwise so a Dec-31 WO from last year doesn't look like today.
+function formatDateTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: sameYear ? undefined : 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+// "1h 12m" / "4h" / "3d 2h" / "10d" — compact human duration.
+function formatDuration(startIso, endIso = null) {
+  if (!startIso) return '';
+  const start = new Date(startIso).getTime();
+  const end = endIso ? new Date(endIso).getTime() : Date.now();
+  const ms = end - start;
+  if (ms < 0) return '';
+  const minutes = Math.floor(ms / 60000);
+  if (minutes < 1) return '< 1m';
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remMin = minutes % 60;
+  if (hours < 24) return remMin > 0 ? `${hours}h ${remMin}m` : `${hours}h`;
+  const days = Math.floor(hours / 24);
+  const remHours = hours % 24;
+  if (days < 7 && remHours > 0) return `${days}d ${remHours}h`;
+  return `${days}d`;
+}
+
+// Color the "Open Xh" text by age so stale WOs scream at peripheral
+// vision. Same grammar we'll reuse on Fleet recency dots later.
+//   ≤24h    → muted (normal)
+//   1–7d    → warning amber
+//   >7d     → danger red + "STALE" prefix
+function openSinceLabel(startIso) {
+  if (!startIso) return { text: 'Open', toneClass: 'text-muted-foreground' };
+  const ms = Date.now() - new Date(startIso).getTime();
+  const dur = formatDuration(startIso);
+  if (ms < 24 * 3600 * 1000) {
+    return { text: `Open ${dur}`, toneClass: 'text-muted-foreground' };
+  }
+  if (ms < 7 * 24 * 3600 * 1000) {
+    return { text: `Open ${dur}`, toneClass: 'text-warning font-semibold' };
+  }
+  return { text: `STALE · ${dur}`, toneClass: 'text-danger font-semibold' };
+}
+
 function fmtMeter(meter) {
   if (!meter) return null;
   const u = meter.unit === 'miles' ? 'mi' : 'hr';
@@ -66,44 +118,94 @@ function StatusPill({ status }) {
 
 function WoRow({ wo }) {
   const meter = fmtMeter(wo.opening_meter);
+  const isCompleted = wo.status === 'completed';
+  const isVoided = wo.status === 'voided';
+  const isInProgress = wo.status === 'in_progress' || wo.status === 'open';
+
+  // Time line varies by status. In-progress WOs get duration + stale
+  // escalation; completed get the full audit trail + "Took Xh Xm";
+  // voided just keep a relative timestamp (no meaningful duration).
+  let timeLine = null;
+  if (isInProgress && wo.started_at) {
+    const since = openSinceLabel(wo.started_at);
+    timeLine = (
+      <p className="mt-2 text-[12px] text-muted-foreground">
+        Opened {formatDateTime(wo.started_at)}
+        <span className="mx-1.5">·</span>
+        <span className={since.toneClass}>{since.text}</span>
+      </p>
+    );
+  } else if (isCompleted && wo.started_at && wo.completed_at) {
+    timeLine = (
+      <p className="mt-2 text-[12px] text-muted-foreground">
+        Opened {formatDateTime(wo.started_at)}
+        <span className="mx-1.5">→</span>
+        Closed {formatDateTime(wo.completed_at)}
+        <span className="mx-1.5">·</span>
+        Took {formatDuration(wo.started_at, wo.completed_at)}
+      </p>
+    );
+  } else if (isVoided && wo.started_at) {
+    timeLine = (
+      <p className="mt-2 text-[12px] text-muted-foreground">
+        Started {relativeTime(wo.started_at)}
+      </p>
+    );
+  }
+
+  const itemCount = wo.item_count ?? 0;
+  const doneCount = wo.done_count ?? 0;
+  const hasItems = itemCount > 0;
+
   return (
-    <Link
-      to={`/assets/${encodeURIComponent(wo.asset_unit_number)}`}
-      className="block group"
-    >
+    <Link to={`/work-orders/${wo.id}`} className="block group">
       <Card interactive className="p-4 group-hover:border-accent/40">
-        <div className="flex items-baseline justify-between gap-3 mb-1">
-          <h3 className="text-base font-semibold text-foreground leading-snug">
+        {/* Top row: asset name (left) + state pill (right) */}
+        <div className="flex items-start justify-between gap-3 mb-1">
+          <h3 className="text-base font-semibold text-foreground leading-snug min-w-0">
             <span className="font-mono text-foreground/85">{wo.asset_unit_number}</span>
-            {wo.summary && <span className="text-foreground/75"> — {wo.summary}</span>}
+            {wo.summary && (
+              <span className="text-foreground/75"> — {wo.summary}</span>
+            )}
           </h3>
-          <span className="text-xs text-muted-foreground whitespace-nowrap">
-            {relativeTime(wo.completed_at || wo.started_at)}
-          </span>
+          <StatusPill status={wo.status} />
         </div>
-        <div className="flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">
+
+        {/* Identity */}
+        <p className="text-[11px] text-muted-foreground">
           <span className="font-mono">{woLabel(wo)}</span>
-          <span>·</span>
-          <span>{wo.user?.full_name || '?'}</span>
+          <span className="mx-1.5">·</span>
+          {wo.user?.full_name || '?'}
+        </p>
+
+        {/* Time info — the spine of the redesign */}
+        {timeLine}
+
+        {/* Operational line: meter · progress · fail · approval · chevron */}
+        <div className="mt-2 flex items-center gap-2 flex-wrap text-[12px] text-muted-foreground">
           {meter && (
+            <span className="inline-flex items-center gap-1">
+              <Gauge size={11} /> {meter}
+            </span>
+          )}
+          {hasItems && (
             <>
-              <span>·</span>
-              <span className="inline-flex items-center gap-1">
-                <Gauge size={11} /> {meter}
+              {meter && <span>·</span>}
+              <span>
+                {doneCount} of {itemCount} done
               </span>
             </>
           )}
-        </div>
-        <div className="mt-2 flex items-center gap-2 flex-wrap">
-          <StatusPill status={wo.status} />
-          <Badge tone="neutral">
-            {wo.done_count}/{wo.item_count} done
-          </Badge>
           {wo.fail_count > 0 && (
-            <Badge tone="danger">{wo.fail_count} fail</Badge>
+            <>
+              <span>·</span>
+              <span className="text-danger font-medium">
+                {wo.fail_count} fail
+              </span>
+            </>
           )}
           {wo.approval_status === 'pending_review' && (
-            <Badge tone="warning">pending review</Badge>
+            <Badge tone="warning">awaiting approval</Badge>
           )}
           <ChevronRight size={14} className="ml-auto text-muted-foreground" />
         </div>
