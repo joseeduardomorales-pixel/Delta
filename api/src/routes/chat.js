@@ -29,7 +29,11 @@ import {
 const IMAGE_URL_TTL_S = 300;
 
 const MAX_TOOL_ITERATIONS = 6;
-const HISTORY_LIMIT = 20; // last N messages of context per turn
+// Max messages of context sent to Anthropic per turn. loadHistory()
+// reads the LAST N rows by created_at and reverses them — do NOT
+// switch to ascending: it returns the OLDEST N rows, which means
+// new user messages never reach the model on long conversations.
+const HISTORY_LIMIT = 20;
 
 export const chatRouter = Router();
 
@@ -192,33 +196,51 @@ function stripExpiredImages(content) {
 }
 
 async function loadHistory({ admin, conversationId, limit = HISTORY_LIMIT }) {
+  // Read the LAST `limit` messages by created_at. Postgres can't do
+  // "last N ASC" directly, so we order DESC, take N, then reverse to
+  // chronological order before handing it to Anthropic.
+  //
+  // CRITICAL: do NOT switch back to ascending+limit. That returns the
+  // OLDEST N messages, meaning new user messages stop reaching Anthropic
+  // once a conversation passes N rows — every reply turns into the
+  // "Delta didn't answer that one" fallback.
   const { data, error } = await admin
     .from('messages')
     .select('role, content, created_at')
     .eq('conversation_id', conversationId)
-    .order('created_at', { ascending: true })
+    .order('created_at', { ascending: false })
     .limit(limit);
   if (error) throw new Error(error.message);
-  // Convert stored {role, content} rows back into Anthropic message format.
-  // - role='tool' rows must be remapped to 'user' (tool_result blocks
-  //   only ride inside user messages per Anthropic's spec).
-  // - image blocks from old turns get stripped because their signed URLs
-  //   have expired.
-  // - Empty content rows (content=[] or null) are SKIPPED. These exist in
-  //   historical data from before the poison-guard fix; including them
-  //   re-poisons the conversation. The poison-guard now prevents new ones
-  //   from being written.
-  return data
+
+  // Filter + remap each row:
+  // - role='tool' must be remapped to 'user' (tool_result blocks only
+  //   ride inside user messages per Anthropic's spec).
+  // - image blocks from old turns get stripped because their signed
+  //   URLs have expired.
+  // - Empty content rows (content=[] or null) are SKIPPED. Historical
+  //   poison from before the empty-content guard.
+  const remapped = data
     .filter(
       (m) =>
-        m.content &&
-        Array.isArray(m.content) &&
-        m.content.length > 0,
+        m.content && Array.isArray(m.content) && m.content.length > 0,
     )
     .map((m) => ({
       role: m.role === 'tool' ? 'user' : m.role,
       content: stripExpiredImages(m.content),
     }));
+
+  // Re-sort to chronological order (we fetched DESC, Anthropic wants ASC).
+  remapped.reverse();
+
+  // Trim leading non-user messages. If our 20-message window happens to
+  // start mid tool_use/tool_result pair (e.g. starts with an assistant
+  // tool_use whose tool_result fell off the front), Anthropic rejects
+  // the request. Drop from the front until we hit a user message.
+  while (remapped.length > 0 && remapped[0].role !== 'user') {
+    remapped.shift();
+  }
+
+  return remapped;
 }
 
 async function persistMessage({ admin, conversationId, role, content, toolCalls, workOrderId }) {

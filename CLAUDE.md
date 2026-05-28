@@ -591,6 +591,27 @@ PROJECT-SPECIFIC HARD CONSTRAINTS (on top of PROTOCOL)
     (service-role only, default deny).
 
 ────────────────────────────────────────────────────────────────
+KNOWN GOTCHAS (must-read before touching these files)
+────────────────────────────────────────────────────────────────
+
+  - CHAT HISTORY WINDOW (api/src/routes/chat.js loadHistory):
+    fetches the LAST `HISTORY_LIMIT` rows by created_at DESC,
+    then reverses to chronological order. Do NOT switch to
+    `.order('created_at', { ascending: true }).limit(N)` — that
+    returns the OLDEST N rows, so once a conversation grows past
+    N, new user messages never reach Anthropic and every reply
+    becomes the "Delta didn't answer that one" fallback. The
+    function also trims leading non-user messages to handle the
+    edge case where the window starts mid tool_use/tool_result
+    pair (Anthropic rejects that shape).
+
+  - EMPTY ANTHROPIC RESPONSES: createMessage occasionally returns
+    end_turn with zero content blocks (model anomaly). chat.js
+    has a poison guard: if content.length === 0, skip the persist
+    and break the loop. loadHistory ALSO filters empty rows on
+    read as a backstop. Never persist content=[] — it cascades.
+
+────────────────────────────────────────────────────────────────
 CURRENT STATE (update each phase)
 ────────────────────────────────────────────────────────────────
 Last phase completed:  Phase 2 — Supabase schema + RLS + bootstrap
