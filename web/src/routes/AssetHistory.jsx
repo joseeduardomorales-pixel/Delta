@@ -254,8 +254,15 @@ function WorkOrderRow({ wo }) {
 function InspectionRow({ insp }) {
   const completed = !!insp.completed_at;
   const tone = !completed ? 'warning' : insp.fail_count > 0 ? 'danger' : 'success';
-  return (
-    <Card interactive className="p-4">
+  // The whole card becomes the tap target when in progress, so the tech
+  // doesn't have to hit the small "Continue inspection →" text. (On touch
+  // devices, hover-styled cards eat the first tap; putting the Link as
+  // the root means the click registers on the first try.)
+  const href = !completed
+    ? `/work-orders/${insp.work_order_id}/inspect/${insp.id}`
+    : null;
+  const inner = (
+    <>
       <div className="flex items-baseline justify-between gap-3">
         <h3 className="text-base font-semibold text-foreground leading-snug">
           {insp.template?.name || 'Inspection'}
@@ -288,16 +295,20 @@ function InspectionRow({ insp }) {
         )}
       </p>
       {!completed && (
-        <p className="mt-2">
-          <Link
-            to={`/work-orders/${insp.work_order_id}/inspect/${insp.id}`}
-            className="text-xs text-accent hover:underline"
-          >
-            Continue inspection →
-          </Link>
+        <p className="mt-2 text-xs text-accent font-medium">
+          Continue inspection →
         </p>
       )}
-    </Card>
+    </>
+  );
+  return href ? (
+    <Link to={href} className="block">
+      <Card interactive className="p-4">
+        {inner}
+      </Card>
+    </Link>
+  ) : (
+    <Card className="p-4">{inner}</Card>
   );
 }
 
