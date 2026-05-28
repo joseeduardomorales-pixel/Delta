@@ -72,36 +72,87 @@ function SourceBadge({ source }) {
 }
 
 // --- Issue row -------------------------------------------------------------
-function IssueRow({ issue, activeWoId, onAddToWo, onOpenWoFor, busy }) {
+
+// raw_input gets auto-populated to "inspection_item:<uuid>" when an
+// inspection failure is converted to an issue. That string was never
+// meant for human eyes — strip anything matching that shape so the UI
+// doesn't leak implementation detail.
+const RAW_INPUT_NOISE_RE = /^inspection_item:[0-9a-f-]{36}$/i;
+function visibleRawInput(raw) {
+  if (!raw) return null;
+  if (RAW_INPUT_NOISE_RE.test(raw.trim())) return null;
+  return raw;
+}
+
+// "[Inspection fail] Air tank — drain valves functional" → title becomes
+// "Air tank — drain valves functional" and we surface the source as a
+// badge instead. Bracket prefixes look like build noise, not editorial.
+const INSPECTION_FAIL_PREFIX_RE = /^\s*\[\s*inspection\s+fail\s*\]\s*/i;
+function splitTitle(rawTitle) {
+  if (!rawTitle) return { title: '', fromInspection: false };
+  if (INSPECTION_FAIL_PREFIX_RE.test(rawTitle)) {
+    return {
+      title: rawTitle.replace(INSPECTION_FAIL_PREFIX_RE, ''),
+      fromInspection: true,
+    };
+  }
+  return { title: rawTitle, fromInspection: false };
+}
+
+// Top-right status pill — same tone vocabulary as the rest of the app.
+function IssueStatusPill({ status }) {
+  if (status === 'in_progress') return <Badge tone="accent">in progress</Badge>;
+  if (status === 'resolved') return <Badge tone="success">resolved</Badge>;
+  if (status === 'dismissed') return <Badge tone="neutral">dismissed</Badge>;
+  if (status === 'acknowledged') return <Badge tone="warning">acknowledged</Badge>;
+  return <Badge tone="warning">open</Badge>;
+}
+
+function IssueRow({
+  issue,
+  activeWoId,
+  linkedWo, // { id, label } when issue is currently in_progress on a WO
+  onAddToWo,
+  onOpenWoFor,
+  busy,
+}) {
+  const { title, fromInspection } = splitTitle(issue.title);
+  const cleanRawInput = visibleRawInput(issue.raw_input);
+  const isOpenLike = ['open', 'acknowledged'].includes(issue.status);
+
   return (
     <Card className="p-4">
-      <div className="flex items-baseline justify-between gap-3">
-        <h3 className="text-base font-semibold text-foreground leading-snug">
-          {issue.title}
+      <div className="flex items-start justify-between gap-3">
+        <h3 className="text-base font-semibold text-foreground leading-snug min-w-0">
+          {title}
         </h3>
-        <span className="text-xs text-muted-foreground whitespace-nowrap">
-          {relativeTime(issue.reported_at)}
-        </span>
+        <IssueStatusPill status={issue.status} />
       </div>
-      <p className="mt-1 text-[11px] text-muted-foreground">
+      <div className="mt-1 flex items-center flex-wrap gap-x-1.5 gap-y-1 text-[11px] text-muted-foreground">
         <span className="font-mono">{issueLabel(issue)}</span>
-        <span className="mx-1.5">·</span>
-        {issue.reporter?.full_name || '?'}
-        <span className="mx-1.5">·</span>
-        <span className="capitalize">{issue.status.replace('_', ' ')}</span>
-      </p>
+        <span>·</span>
+        <span>{issue.reporter?.full_name || '?'}</span>
+        <span>·</span>
+        <span>{relativeTime(issue.reported_at)}</span>
+        {fromInspection && (
+          <>
+            <span className="mx-0.5" aria-hidden>·</span>
+            <Badge tone="accent">from inspection</Badge>
+          </>
+        )}
+      </div>
       {issue.description && (
         <p className="mt-3 text-sm text-foreground/85 whitespace-pre-wrap leading-relaxed">
           {issue.description}
         </p>
       )}
-      {issue.raw_input && issue.raw_input !== issue.description && (
+      {cleanRawInput && cleanRawInput !== issue.description && (
         <p className="mt-2 text-[12px] text-muted-foreground italic leading-relaxed">
-          "{issue.raw_input}"
+          "{cleanRawInput}"
         </p>
       )}
-      {/* Action: + Add to WO (or open a new one) — only on open-status issues */}
-      {['open', 'acknowledged'].includes(issue.status) && (
+      {/* Bottom-right anchor: action button OR "linked to WO" pointer. */}
+      {isOpenLike && (
         <div className="mt-3 flex justify-end">
           {activeWoId ? (
             <Button
@@ -122,6 +173,16 @@ function IssueRow({ issue, activeWoId, onAddToWo, onOpenWoFor, busy }) {
               <Wrench size={14} /> Open a WO to address this
             </Button>
           )}
+        </div>
+      )}
+      {issue.status === 'in_progress' && linkedWo && (
+        <div className="mt-3 flex justify-end">
+          <Link
+            to={`/work-orders/${linkedWo.id}`}
+            className="inline-flex items-center gap-1 text-xs text-accent hover:underline"
+          >
+            Linked to <span className="font-mono">{linkedWo.label}</span> →
+          </Link>
         </div>
       )}
     </Card>
@@ -377,6 +438,19 @@ export default function AssetHistory() {
     (w) => w.user?.id === profile?.id,
   );
 
+  // For in_progress issues, point to the WO they're currently being
+  // worked on. Scan all active WOs' items for source='issue' + this
+  // issue's id (the only items that DON'T link back are completed/
+  // skipped, which we still want to show as linked for context).
+  const issueToWoMap = (data?.active_work_orders || []).reduce((acc, wo) => {
+    for (const it of wo.items || []) {
+      if (it.source === 'issue' && it.source_issue_id) {
+        acc[it.source_issue_id] = { id: wo.id, label: woLabel(wo) };
+      }
+    }
+    return acc;
+  }, {});
+
   const load = useCallback(async () => {
     setLoading(true);
     setErr(null);
@@ -573,6 +647,7 @@ export default function AssetHistory() {
                       key={i.id}
                       issue={i}
                       activeWoId={activeWo?.id || null}
+                      linkedWo={issueToWoMap[i.id] || null}
                       onAddToWo={addIssueToActiveWo}
                       onOpenWoFor={(issue) => setConfirmOpenWoFor(issue)}
                       busy={busyAction}
