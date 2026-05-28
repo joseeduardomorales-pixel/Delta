@@ -62,15 +62,20 @@ function SourceBadge({ source }) {
   return <Badge tone="neutral">ad-hoc</Badge>;
 }
 
-// ── Add Issue modal ────────────────────────────────────────────────────────
+// ── Add Issue modal (multi-select) ─────────────────────────────────────────
+// Tech checks one or more open issues, then taps Add (N) to link them all
+// at once. "Add all" is a one-tap shortcut for the whole list. Each issue
+// is POSTed as a separate line item by the parent.
 function AddIssueModal({ open, assetUnit, accessToken, onClose, onPicked, busy }) {
   const [issues, setIssues] = useState(null);
   const [err, setErr] = useState(null);
+  const [selected, setSelected] = useState(() => new Set());
 
   useEffect(() => {
     if (!open) return;
     setIssues(null);
     setErr(null);
+    setSelected(new Set());
     fetch(
       `${API_URL}/api/issues?asset_unit_number=${encodeURIComponent(assetUnit)}&status=open,acknowledged`,
       { headers: { Authorization: `Bearer ${accessToken}` } },
@@ -80,13 +85,58 @@ function AddIssueModal({ open, assetUnit, accessToken, onClose, onPicked, busy }
       .catch((e) => setErr(e.message || `HTTP ${e.status}`));
   }, [open, assetUnit, accessToken]);
 
+  function toggle(id) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function addSelected() {
+    if (!issues) return;
+    const picked = issues.filter((i) => selected.has(i.id));
+    if (picked.length === 0) return;
+    onPicked(picked);
+  }
+
+  function addAll() {
+    if (!issues || issues.length === 0) return;
+    onPicked(issues);
+  }
+
+  const count = selected.size;
+  const hasIssues = issues && issues.length > 0;
+
   return (
     <Modal
       open={open}
       onClose={onClose}
-      title="Add an open issue to this WO"
-      description={`Pick from open issues on ${assetUnit}. The issue will be linked as a new line item and auto-resolved when you mark it done.`}
-      footer={<ModalActions onCancel={onClose} hideConfirm />}
+      title="Add open issues to this WO"
+      description={`Pick one or more open issues on ${assetUnit}. Each one becomes a line item and auto-resolves when marked done.`}
+      footer={
+        <ModalActions onCancel={onClose}>
+          {hasIssues && (
+            <>
+              <Button
+                variant="secondary"
+                onClick={addAll}
+                disabled={busy}
+              >
+                <Plus size={14} /> Add all ({issues.length})
+              </Button>
+              <Button
+                variant="primary"
+                onClick={addSelected}
+                disabled={busy || count === 0}
+              >
+                <Check size={14} /> Add{count > 0 ? ` (${count})` : ''}
+              </Button>
+            </>
+          )}
+        </ModalActions>
+      }
     >
       {!issues && !err && (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -99,33 +149,54 @@ function AddIssueModal({ open, assetUnit, accessToken, onClose, onPicked, busy }
           No open issues on {assetUnit}.
         </p>
       )}
-      {issues && issues.length > 0 && (
+      {hasIssues && (
         <ul className="space-y-2">
-          {issues.map((i) => (
-            <li key={i.id}>
-              <button
-                type="button"
-                onClick={() => onPicked(i)}
-                disabled={busy}
-                className={cn(
-                  'w-full text-left rounded-lg border border-border bg-card px-4 py-3',
-                  'hover:border-accent/40 transition-colors disabled:opacity-50',
-                )}
-              >
-                <div className="flex items-baseline gap-2">
-                  <span className="font-mono text-[11px] text-muted-foreground">
-                    {issueLabel(i)}
+          {issues.map((i) => {
+            const isChecked = selected.has(i.id);
+            return (
+              <li key={i.id}>
+                <button
+                  type="button"
+                  onClick={() => toggle(i.id)}
+                  disabled={busy}
+                  aria-pressed={isChecked}
+                  className={cn(
+                    'w-full text-left rounded-lg border px-4 py-3 transition-colors',
+                    'disabled:opacity-50 flex items-start gap-3',
+                    isChecked
+                      ? 'border-accent bg-accent-bg'
+                      : 'border-border bg-card hover:border-accent/40',
+                  )}
+                >
+                  {/* Checkbox indicator — large tap target, visible state */}
+                  <span
+                    className={cn(
+                      'mt-0.5 shrink-0 h-5 w-5 rounded border flex items-center justify-center',
+                      isChecked
+                        ? 'border-accent bg-accent text-accent-foreground'
+                        : 'border-border bg-background',
+                    )}
+                    aria-hidden="true"
+                  >
+                    {isChecked && <Check size={14} strokeWidth={3} />}
                   </span>
-                  <span className="font-medium text-sm">{i.title}</span>
-                </div>
-                {i.description && (
-                  <p className="mt-1 text-xs text-muted-foreground line-clamp-2">
-                    {i.description}
-                  </p>
-                )}
-              </button>
-            </li>
-          ))}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-baseline gap-2 flex-wrap">
+                      <span className="font-mono text-[11px] text-muted-foreground">
+                        {issueLabel(i)}
+                      </span>
+                      <span className="font-medium text-sm">{i.title}</span>
+                    </div>
+                    {i.description && (
+                      <p className="mt-1 text-xs text-muted-foreground line-clamp-2">
+                        {i.description}
+                      </p>
+                    )}
+                  </div>
+                </button>
+              </li>
+            );
+          })}
         </ul>
       )}
     </Modal>
@@ -457,6 +528,57 @@ export default function WorkOrderDetail() {
     }
   }
 
+  // Bulk-add a batch of issues as line items. Posts one at a time so a
+  // mid-batch failure tells us exactly which issue blew up; on first
+  // failure we stop, refresh state, and toast which one failed.
+  async function addIssues(issues) {
+    if (!issues || issues.length === 0) return;
+    setPickerBusy(true);
+    let added = 0;
+    try {
+      for (const iss of issues) {
+        const r = await fetch(`${API_URL}/api/work-orders/${woId}/items`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({
+            source: 'issue',
+            source_id: iss.id,
+            type: 'repair',
+            title: iss.title,
+            description: iss.description || null,
+          }),
+        });
+        if (!r.ok) {
+          const body = await r.json().catch(() => ({}));
+          throw new Error(
+            `${iss.title}: ${body.error || `HTTP ${r.status}`}`,
+          );
+        }
+        added += 1;
+      }
+      pushToast({
+        tone: 'success',
+        title: added === 1 ? 'Issue added' : `${added} issues added`,
+      });
+      setPickerOpen(null);
+    } catch (e) {
+      pushToast({
+        tone: 'danger',
+        title:
+          added > 0
+            ? `Stopped after ${added} added — next one failed`
+            : 'Add failed',
+        text: e.message,
+      });
+    } finally {
+      await load();
+      setPickerBusy(false);
+    }
+  }
+
   async function patchItem(itemId, body) {
     setBusyId(itemId);
     try {
@@ -705,15 +827,7 @@ export default function WorkOrderDetail() {
         assetUnit={wo?.asset_unit_number || ''}
         accessToken={session.access_token}
         onClose={() => setPickerOpen(null)}
-        onPicked={(iss) =>
-          addItem({
-            source: 'issue',
-            source_id: iss.id,
-            type: 'repair',
-            title: iss.title,
-            description: iss.description || null,
-          })
-        }
+        onPicked={addIssues}
         busy={pickerBusy}
       />
       <AddPmModal
