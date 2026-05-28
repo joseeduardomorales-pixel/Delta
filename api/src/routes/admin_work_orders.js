@@ -39,7 +39,8 @@ adminWorkOrdersRouter.get('/api/admin/work-orders/pending', async (req, res) => 
        items:work_order_items (
          id, sequence, source, source_issue_id, source_pm_schedule_id,
          source_campaign_assignment_id, type, title, description, raw_input,
-         status, notes, skipped_reason, completed_at
+         status, notes, skipped_reason, completed_at,
+         inspection_template_id, inspection_result
        )`,
     )
     .eq('approval_status', 'pending_review')
