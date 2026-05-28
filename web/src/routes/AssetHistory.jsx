@@ -66,6 +66,7 @@ function SourceBadge({ source }) {
   if (source === 'issue') return <Badge tone="warning">issue</Badge>;
   if (source === 'pm_schedule') return <Badge tone="accent">PM</Badge>;
   if (source === 'campaign_assignment') return <Badge tone="accent">campaign</Badge>;
+  if (source === 'inspection_template') return <Badge tone="accent">inspection</Badge>;
   return <Badge tone="neutral">ad-hoc</Badge>;
 }
 
@@ -103,8 +104,27 @@ function IssueRow({ issue }) {
 }
 
 // --- WO row (with items) ---------------------------------------------------
+// Inspection items are intentionally NOT expanded here — they're already
+// represented by the matching card in the "Inspections" section above.
+// We collapse them into a compact summary line per inspection so the WO
+// card doesn't repeat all 57 lines.
 function WorkOrderRow({ wo }) {
   const meter = fmtMeter(wo.opening_meter);
+  const allItems = wo.items || [];
+  const regularItems = allItems.filter((it) => it.source !== 'inspection_template');
+  const inspectionItems = allItems.filter((it) => it.source === 'inspection_template');
+
+  // One summary row per distinct inspection_template_id on this WO.
+  const byTemplate = new Map();
+  for (const it of inspectionItems) {
+    const key = it.inspection_template_id || 'unknown';
+    const cur = byTemplate.get(key) || { total: 0, done: 0, fail: 0 };
+    cur.total += 1;
+    if (it.status === 'done') cur.done += 1;
+    if (it.inspection_result === 'fail' || it.inspection_result === 'no') cur.fail += 1;
+    byTemplate.set(key, cur);
+  }
+
   return (
     <Card interactive className="p-4">
       <div className="flex items-baseline justify-between gap-3 mb-1">
@@ -130,9 +150,9 @@ function WorkOrderRow({ wo }) {
         <span className="capitalize">{wo.status.replace('_', ' ')}</span>
       </div>
 
-      {wo.items?.length > 0 && (
+      {regularItems.length > 0 && (
         <ul className="mt-3 space-y-1.5">
-          {wo.items.map((it) => (
+          {regularItems.map((it) => (
             <li
               key={it.id}
               className="flex items-start gap-2 text-sm text-foreground/90"
@@ -163,6 +183,25 @@ function WorkOrderRow({ wo }) {
             </li>
           ))}
         </ul>
+      )}
+
+      {/* Inspection summary — one line per template referenced. */}
+      {byTemplate.size > 0 && (
+        <div className="mt-3 space-y-1.5">
+          {[...byTemplate.entries()].map(([key, s]) => (
+            <div
+              key={key}
+              className="flex items-center gap-2 text-xs text-muted-foreground rounded-md border border-border/60 bg-muted/30 px-2.5 py-1.5"
+            >
+              <SourceBadge source="inspection_template" />
+              <span>
+                {s.done}/{s.total} items done
+                {s.fail > 0 && <span className="text-danger"> · {s.fail} fail</span>}
+              </span>
+              <span className="ml-auto text-foreground/60">see Inspections above</span>
+            </div>
+          ))}
+        </div>
       )}
 
       {wo.action_photos?.length > 0 && (
