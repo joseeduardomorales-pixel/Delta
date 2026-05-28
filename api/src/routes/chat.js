@@ -125,6 +125,10 @@ function buildSystemPrompt({ profile }) {
     '  When in doubt, call list_assets with a substring to confirm.',
     '- Dispatchers can ONLY report issues. If a dispatcher tries to log work',
     '  or open a WO, the tool will refuse — tell them that politely.',
+    '- NEVER end a turn silent after a tool call. After EVERY tool you call,',
+    '  you MUST output at least one text block in the same turn or the next',
+    '  describing what happened. The user reads YOUR text, not the raw tool',
+    '  result. A silent end_turn = the user sees nothing = bug.',
     '- ALWAYS include the tool\'s `confirmation` field verbatim in your reply',
     '  so the user can verify and undo if needed.',
     '- All WOs land approval_status="pending_review" until admin signs off.',
@@ -354,6 +358,12 @@ async function handleChat(req, res) {
   };
 
   const createdWorkOrders = [];
+  // Captures the `confirmation` string from each tool execution. We use
+  // these as a safety net when Claude finishes the turn silent after a
+  // tool call (model returns end_turn with zero text blocks). Without
+  // this, the client would render "(no reply)" even though the tool
+  // succeeded and the data is in the DB.
+  const toolConfirmations = [];
   let assistantText = '';
   let messages = history;
 
@@ -396,6 +406,9 @@ async function handleChat(req, res) {
       if (result.ok && result.work_order) {
         createdWorkOrders.push(result.work_order);
       }
+      if (typeof result?.confirmation === 'string' && result.confirmation.trim()) {
+        toolConfirmations.push(result.confirmation.trim());
+      }
       toolResults.push({
         type: 'tool_result',
         tool_use_id: tu.id,
@@ -436,6 +449,21 @@ async function handleChat(req, res) {
         );
       }
     }
+  }
+
+  // Safety net: if Claude ended the conversation silent after a tool
+  // call (no text blocks in the final turn), echo the tool confirmations
+  // back to the user. Otherwise the client would render "(no reply)"
+  // even though the tool succeeded and the data is in the DB.
+  if (!assistantText.trim() && toolConfirmations.length > 0) {
+    assistantText = toolConfirmations.join('\n\n');
+    logger.warn(
+      {
+        userId: req.user.id,
+        toolCount: toolConfirmations.length,
+      },
+      'chat: model silent after tool call — falling back to confirmations',
+    );
   }
 
   res.json({

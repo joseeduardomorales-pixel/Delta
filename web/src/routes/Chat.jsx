@@ -94,7 +94,12 @@ export default function Chat() {
         ...m,
         {
           role: 'assistant',
-          text: data.assistantText || '(no reply)',
+          // If the server returned empty assistantText, Claude was silent
+          // AND no tool confirmation existed to fall back on. Tell the
+          // user honestly instead of pretending nothing happened.
+          text:
+            data.assistantText ||
+            "Delta didn't answer that one. Try rephrasing — if this keeps happening, tell Lalo.",
           workOrders: data.createdWorkOrders || [],
         },
       ]);
