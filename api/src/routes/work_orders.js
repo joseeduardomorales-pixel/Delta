@@ -517,6 +517,15 @@ workOrdersRouter.patch(
 );
 
 // ----- POST /api/work-orders/:id/close -----------------------------------
+// Closes the WO. Any items still 'pending' at close time are marked
+// 'skipped' with reason 'wo_closed_with_pending', AND their upstream
+// links (issue / pm_schedule / campaign_assignment) are reverted to
+// their pre-WO state so another tech can pick them up:
+//   - issue.status: 'in_progress' → 'open'  (the issue was bumped to
+//     in_progress when the item was added; revert it now)
+//   - pm_schedule: no change (PM doesn't have a per-WO state)
+//   - campaign_assignment.status: 'open' (it was never flipped, so no-op
+//     here unless we added that on item-add — we didn't)
 workOrdersRouter.post(
   '/api/work-orders/:id/close',
   requireAuth,
@@ -533,6 +542,44 @@ workOrdersRouter.post(
       return res.status(409).json({ error: 'already_completed' });
     }
 
+    // 1) Find pending items on this WO.
+    const { data: pendingItems } = await admin
+      .from('work_order_items')
+      .select('id, source, source_issue_id')
+      .eq('work_order_id', req.params.id)
+      .eq('status', 'pending');
+
+    const revertedIssueIds = [];
+    if (pendingItems?.length) {
+      // 2) Skip the items.
+      const ids = pendingItems.map((it) => it.id);
+      await admin
+        .from('work_order_items')
+        .update({
+          status: 'skipped',
+          skipped_reason: 'wo_closed_with_pending',
+        })
+        .in('id', ids);
+
+      // 3) Revert linked issues back to 'open' so they re-appear in the
+      //    asset's open-issues list. Only flip issues currently
+      //    'in_progress' (don't touch ones that were already manually
+      //    moved to a different state by an admin).
+      const issueIds = pendingItems
+        .filter((it) => it.source === 'issue' && it.source_issue_id)
+        .map((it) => it.source_issue_id);
+      if (issueIds.length) {
+        const { data: reverted } = await admin
+          .from('issues')
+          .update({ status: 'open' })
+          .in('id', issueIds)
+          .eq('status', 'in_progress')
+          .select('id');
+        for (const r of reverted || []) revertedIssueIds.push(r.id);
+      }
+    }
+
+    // 4) Close the WO itself.
     const { data, error } = await admin
       .from('work_orders')
       .update({
@@ -544,7 +591,12 @@ workOrdersRouter.post(
       .select('id, status, completed_at, summary')
       .single();
     if (error) return res.status(500).json({ error: error.message });
-    res.json({ work_order: data });
+
+    res.json({
+      work_order: data,
+      skipped_item_count: pendingItems?.length || 0,
+      reverted_issue_ids: revertedIssueIds,
+    });
   },
 );
 

@@ -6,7 +6,7 @@
 //   3. Completed WOs — historical record, with approval status
 
 import { useEffect, useState, useCallback } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
   ChevronLeft,
@@ -21,7 +21,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../auth/AuthProvider.jsx';
 import { API_URL } from '../lib/supabase.js';
-import { Header, Card, Badge, SectionLabel, Banner } from '../components/ui/index.js';
+import { Header, Card, Badge, SectionLabel, Banner, Button, Modal, useToast } from '../components/ui/index.js';
 import { cn } from '../lib/cn.js';
 import { woLabel, issueLabel, inspectionLabel } from '../lib/numbers.js';
 import ReportIssueButton from '../components/ReportIssueButton.jsx';
@@ -72,9 +72,9 @@ function SourceBadge({ source }) {
 }
 
 // --- Issue row -------------------------------------------------------------
-function IssueRow({ issue }) {
+function IssueRow({ issue, activeWoId, onAddToWo, onOpenWoFor, busy }) {
   return (
-    <Card interactive className="p-4">
+    <Card className="p-4">
       <div className="flex items-baseline justify-between gap-3">
         <h3 className="text-base font-semibold text-foreground leading-snug">
           {issue.title}
@@ -99,6 +99,30 @@ function IssueRow({ issue }) {
         <p className="mt-2 text-[12px] text-muted-foreground italic leading-relaxed">
           "{issue.raw_input}"
         </p>
+      )}
+      {/* Action: + Add to WO (or open a new one) — only on open-status issues */}
+      {['open', 'acknowledged'].includes(issue.status) && (
+        <div className="mt-3 flex justify-end">
+          {activeWoId ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => onAddToWo(issue)}
+              disabled={busy}
+            >
+              <Wrench size={14} /> Add to WO
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => onOpenWoFor(issue)}
+              disabled={busy}
+            >
+              <Wrench size={14} /> Open a WO to address this
+            </Button>
+          )}
+        </div>
       )}
     </Card>
   );
@@ -126,8 +150,11 @@ function WorkOrderRow({ wo }) {
     byTemplate.set(key, cur);
   }
 
+  // Tap anywhere on the card → WO detail page where the tech can add
+  // items, mark done, close, etc.
   return (
-    <Card interactive className="p-4">
+    <Link to={`/work-orders/${wo.id}`} className="block">
+      <Card interactive className="p-4">
       <div className="flex items-baseline justify-between gap-3 mb-1">
         <h3 className="text-base font-semibold text-foreground leading-snug">
           <span className="font-mono">{woLabel(wo)}</span>
@@ -246,7 +273,8 @@ function WorkOrderRow({ wo }) {
           </span>
         )}
       </div>
-    </Card>
+      </Card>
+    </Link>
   );
 }
 
@@ -332,10 +360,22 @@ function Section({ title, tone, count, icon: Icon, children }) {
 export default function AssetHistory() {
   const { unit } = useParams();
   const { session, profile, signOut } = useAuth();
+  const { push: pushToast } = useToast();
+  const navigate = useNavigate();
   const [asset, setAsset] = useState(null);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
+  const [busyAction, setBusyAction] = useState(false);
+  const [confirmOpenWoFor, setConfirmOpenWoFor] = useState(null); // issue obj
+  const [needsMeter, setNeedsMeter] = useState(null); // { issue, meter_unit, last_known }
+  const [meterValue, setMeterValue] = useState('');
+
+  // The "active WO" is one this user already opened on this asset and
+  // hasn't closed. If multiple, we prefer the most recent.
+  const activeWo = (data?.active_work_orders || []).find(
+    (w) => w.user?.id === profile?.id,
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -365,6 +405,102 @@ export default function AssetHistory() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Add the given issue as an item on the user's active WO (must exist).
+  async function addIssueToActiveWo(issue) {
+    if (!activeWo) return;
+    setBusyAction(true);
+    try {
+      const r = await fetch(
+        `${API_URL}/api/work-orders/${activeWo.id}/items`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({
+            source: 'issue',
+            source_id: issue.id,
+            type: 'repair',
+            title: issue.title,
+            description: issue.description || null,
+          }),
+        },
+      );
+      const body = await r.json();
+      if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+      pushToast({
+        tone: 'success',
+        title: 'Added',
+        text: `${issue.title} → ${activeWo.id.slice(0, 8)}`,
+      });
+      await load();
+    } catch (e) {
+      pushToast({ tone: 'danger', title: 'Add failed', text: e.message });
+    } finally {
+      setBusyAction(false);
+    }
+  }
+
+  // Open a new WO on this asset (handles needs_meter prompt), then add
+  // the issue as its first item.
+  async function openWoForIssue(issue, manualMeter = null) {
+    setBusyAction(true);
+    try {
+      const body = { asset_unit_number: unit };
+      if (manualMeter != null) {
+        body.manual_meter_value = Number(manualMeter);
+      }
+      const r = await fetch(`${API_URL}/api/work-orders`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json();
+      if (r.status === 409 && data.error === 'needs_meter') {
+        setNeedsMeter({ issue, ...data });
+        setMeterValue('');
+        return;
+      }
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      // WO opened — now add the issue as item.
+      const woId = data.work_order.id;
+      const r2 = await fetch(`${API_URL}/api/work-orders/${woId}/items`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          source: 'issue',
+          source_id: issue.id,
+          type: 'repair',
+          title: issue.title,
+          description: issue.description || null,
+        }),
+      });
+      if (!r2.ok) {
+        const body2 = await r2.json().catch(() => ({}));
+        throw new Error(body2.error || `HTTP ${r2.status}`);
+      }
+      pushToast({
+        tone: 'success',
+        title: 'Work order opened',
+        text: `Added "${issue.title}" as the first item.`,
+      });
+      setConfirmOpenWoFor(null);
+      setNeedsMeter(null);
+      navigate(`/work-orders/${woId}`);
+    } catch (e) {
+      pushToast({ tone: 'danger', title: 'Couldn’t open WO', text: e.message });
+    } finally {
+      setBusyAction(false);
+    }
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -433,7 +569,14 @@ export default function AssetHistory() {
               ) : (
                 <div className="space-y-3">
                   {data.open_issues.map((i) => (
-                    <IssueRow key={i.id} issue={i} />
+                    <IssueRow
+                      key={i.id}
+                      issue={i}
+                      activeWoId={activeWo?.id || null}
+                      onAddToWo={addIssueToActiveWo}
+                      onOpenWoFor={(issue) => setConfirmOpenWoFor(issue)}
+                      busy={busyAction}
+                    />
                   ))}
                 </div>
               )}
@@ -504,6 +647,107 @@ export default function AssetHistory() {
           </>
         )}
       </main>
+
+      {/* Confirm: open a brand-new WO for this issue */}
+      <Modal
+        open={!!confirmOpenWoFor && !needsMeter}
+        onClose={() => (busyAction ? null : setConfirmOpenWoFor(null))}
+        title="Open a work order?"
+      >
+        {confirmOpenWoFor && (
+          <div className="space-y-4">
+            <p className="text-sm text-foreground/85">
+              You don't have an active WO on <span className="font-mono">{unit.toUpperCase()}</span>.
+              Open a new one and add this issue as its first item?
+            </p>
+            <div className="rounded-md border border-border bg-muted/30 p-3">
+              <p className="text-sm font-semibold text-foreground">
+                {confirmOpenWoFor.title}
+              </p>
+              {confirmOpenWoFor.description && (
+                <p className="mt-1 text-xs text-muted-foreground whitespace-pre-wrap">
+                  {confirmOpenWoFor.description}
+                </p>
+              )}
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="ghost"
+                onClick={() => setConfirmOpenWoFor(null)}
+                disabled={busyAction}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() => openWoForIssue(confirmOpenWoFor)}
+                disabled={busyAction}
+              >
+                <Wrench size={14} /> Open WO
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Meter prompt — server told us it needs an opening reading */}
+      <Modal
+        open={!!needsMeter}
+        onClose={() => (busyAction ? null : setNeedsMeter(null))}
+        title="Enter opening meter"
+      >
+        {needsMeter && (
+          <div className="space-y-4">
+            <p className="text-sm text-foreground/85">
+              We need an opening{' '}
+              <span className="font-medium">
+                {needsMeter.meter_unit === 'miles' ? 'odometer' : 'hour meter'}
+              </span>{' '}
+              reading before opening this WO.
+            </p>
+            {needsMeter.last_known && (
+              <p className="text-xs text-muted-foreground">
+                Last known: {Number(needsMeter.last_known.value).toLocaleString()}{' '}
+                {needsMeter.last_known.unit === 'miles' ? 'mi' : 'hr'}
+                {needsMeter.last_known.recorded_at && (
+                  <> · {relativeTime(needsMeter.last_known.recorded_at)}</>
+                )}
+              </p>
+            )}
+            <input
+              type="number"
+              inputMode="numeric"
+              autoFocus
+              value={meterValue}
+              onChange={(e) => setMeterValue(e.target.value)}
+              placeholder={needsMeter.meter_unit === 'miles' ? 'Miles' : 'Hours'}
+              className={cn(
+                'w-full h-12 px-3 rounded-md border border-border bg-background',
+                'text-foreground font-mono text-lg',
+                'focus:outline-none focus:ring-2 focus:ring-ring',
+              )}
+            />
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="ghost"
+                onClick={() => setNeedsMeter(null)}
+                disabled={busyAction}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() =>
+                  openWoForIssue(needsMeter.issue, meterValue.trim() || '0')
+                }
+                disabled={busyAction || !meterValue.trim()}
+              >
+                <Gauge size={14} /> Open WO
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }
