@@ -89,7 +89,11 @@ describe('POST /api/chat (tool-use end-to-end)', () => {
       const res = await request(app)
         .post('/api/chat')
         .set('Authorization', `Bearer ${jwt}`)
-        .send({ message: 'Quick test: I did an oil change on CC07 today.' });
+        // Include the odometer inline so the test doesn't depend on
+        // telematics freshness. (FRESH_MS = 24h; if Alvys sync didn't
+        // run in the last day the tool would correctly ask for a meter
+        // and the test would flake.)
+        .send({ message: 'Quick test: I did an oil change on CC07 today, odometer 587000.' });
 
       expect(res.status).toBe(200);
       expect(res.body.conversationId).toMatch(/^[0-9a-f-]{36}$/);
