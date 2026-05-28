@@ -10,10 +10,18 @@ import { Link, NavLink, useLocation } from 'react-router-dom';
 import { Menu, X, LogOut } from 'lucide-react';
 import { cn } from '../../lib/cn.js';
 import { Button } from './Button.jsx';
+import { buildLabel } from '../../lib/build.js';
 
 function Logo() {
+  // The `title` tooltip exposes the build sha — hovering the logo on
+  // desktop shows e.g. "Delta · 3046c49 · 5/27". One-second sanity check
+  // for "is this user on the latest build?" without opening dev tools.
   return (
-    <Link to="/" className="inline-flex items-center gap-2 group">
+    <Link
+      to="/"
+      title={`Delta · ${buildLabel()}`}
+      className="inline-flex items-center gap-2 group"
+    >
       <span
         aria-hidden
         className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-accent-diagonal shadow-accent text-accent-foreground font-display text-base leading-none"
@@ -133,6 +141,9 @@ export function Header({ profile, onSignOut, context, sticky = false, className 
             {isAdmin && <AdminNav mobile onClick={() => setMenuOpen(false)} />}
             <div className="h-px bg-border" />
             <UserBlock profile={profile} onSignOut={onSignOut} mobile />
+            <p className="text-[10px] text-muted-foreground/70 text-center pt-2">
+              build {buildLabel()}
+            </p>
           </div>
         </div>
       )}

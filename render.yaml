@@ -87,7 +87,10 @@ services:
       - type: rewrite
         source: /*
         destination: /index.html
-    # Cache headers: long for assets (content-hashed), short for HTML.
+    # Cache headers — the most important defense against stale bundles.
+    # Hashed assets under /assets/* get the immutable far-future cache.
+    # The HTML entry point, manifest, and the service worker itself MUST
+    # NOT be cached: a stale SW or HTML pinpoints to old hashed JS forever.
     headers:
       - path: /*
         name: X-Frame-Options
@@ -100,7 +103,22 @@ services:
         value: public, max-age=31536000, immutable
       - path: /index.html
         name: Cache-Control
-        value: no-cache
+        value: no-store, must-revalidate, max-age=0
+      - path: /
+        name: Cache-Control
+        value: no-store, must-revalidate, max-age=0
+      - path: /sw.js
+        name: Cache-Control
+        value: no-store, must-revalidate, max-age=0
+      - path: /workbox-*.js
+        name: Cache-Control
+        value: no-store, must-revalidate, max-age=0
+      - path: /manifest.webmanifest
+        name: Cache-Control
+        value: no-store, must-revalidate, max-age=0
+      - path: /sw.js
+        name: Service-Worker-Allowed
+        value: /
     envVars:
       # Vite bakes VITE_* vars into the JS bundle at build time.
       # These MUST be set BEFORE the first build runs.
