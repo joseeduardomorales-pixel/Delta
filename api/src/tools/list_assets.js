@@ -3,17 +3,24 @@
 export const listAssets = {
   name: 'list_assets',
   description:
-    'List Cold Cargo assets (trucks, trailers, reefers). Filter by type, ' +
-    'active status, or a substring of the unit number. Use when the tech ' +
-    'asks "what trucks do we have?" or when you need to verify a unit ' +
-    'number before creating a work order.',
+    'List Cold Cargo assets. Filter by type, active status, or a substring ' +
+    'of the unit number. Use when the operator asks "what trucks do we ' +
+    'have?" or when you need to verify a unit number before creating a ' +
+    'work order. NOTE on vocabulary: in our schema, type="reefer" means a ' +
+    'refrigerated trailer and type="trailer" means a dry van. When the ' +
+    'operator says "trailer" generically they mean BOTH — omit the type ' +
+    'filter (or call twice) so reefers come through too.',
   input_schema: {
     type: 'object',
     properties: {
       type: {
         type: 'string',
         enum: ['truck', 'trailer', 'reefer'],
-        description: 'Restrict to a specific asset type.',
+        description:
+          'Restrict to a specific asset type. "trailer" = dry van only; ' +
+          '"reefer" = refrigerated trailer only. If the operator said ' +
+          '"trailer" generically (meaning anything towable), OMIT this ' +
+          'filter so both reefers and dry vans are returned.',
       },
       active: {
         type: 'boolean',
