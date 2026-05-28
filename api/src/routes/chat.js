@@ -204,10 +204,21 @@ async function loadHistory({ admin, conversationId, limit = HISTORY_LIMIT }) {
   //   only ride inside user messages per Anthropic's spec).
   // - image blocks from old turns get stripped because their signed URLs
   //   have expired.
-  return data.map((m) => ({
-    role: m.role === 'tool' ? 'user' : m.role,
-    content: stripExpiredImages(m.content),
-  }));
+  // - Empty content rows (content=[] or null) are SKIPPED. These exist in
+  //   historical data from before the poison-guard fix; including them
+  //   re-poisons the conversation. The poison-guard now prevents new ones
+  //   from being written.
+  return data
+    .filter(
+      (m) =>
+        m.content &&
+        Array.isArray(m.content) &&
+        m.content.length > 0,
+    )
+    .map((m) => ({
+      role: m.role === 'tool' ? 'user' : m.role,
+      content: stripExpiredImages(m.content),
+    }));
 }
 
 async function persistMessage({ admin, conversationId, role, content, toolCalls, workOrderId }) {
@@ -371,8 +382,28 @@ async function handleChat(req, res) {
   for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
     const res1 = await createMessage({ system, messages, tools });
 
-    // Persist what Claude returned (assistant message — possibly with tool_use blocks).
     const assistantContent = res1.content;
+
+    // POISON GUARD: occasionally Anthropic returns end_turn with zero
+    // content blocks (model anomaly). If we persist that empty array,
+    // every subsequent turn loads it back and Anthropic responds with
+    // another empty — the conversation cascades into silence. Skip the
+    // persist + break out. The safety net (toolConfirmations) below
+    // will still surface anything useful from earlier iterations.
+    if (!Array.isArray(assistantContent) || assistantContent.length === 0) {
+      logger.warn(
+        {
+          userId: req.user.id,
+          conversationId,
+          iteration: i,
+          stopReason: res1.stop_reason,
+        },
+        'chat: model returned empty content — skipping persist to avoid history poison',
+      );
+      break;
+    }
+
+    // Persist what Claude returned (assistant message — possibly with tool_use blocks).
     await persistMessage({
       admin,
       conversationId,
