@@ -1,0 +1,273 @@
+// Inspection local store — IndexedDB-backed source of truth for in-progress
+// inspections on this device.
+//
+// Three object stores:
+//
+//   inspection_cache
+//     Keyed by inspection_id. Holds the last-known server snapshot of an
+//     inspection (template, items with their results, photo metadata).
+//     Refreshed on mount when online; read-from-only when offline. The
+//     runner UI renders from this store, never directly from server data.
+//
+//   pending_actions
+//     Queue of PATCH/POST calls waiting to be sent to the server. One
+//     entry per (inspection_id + item_id) for item marks — newest tap
+//     replaces older queued entry (last-write-wins per item). Also holds
+//     finalize actions (POST /complete) and remove_photo intents.
+//     Each entry: { id, kind, inspection_id, item_id, payload, attempts,
+//                   status: 'queued'|'syncing'|'needs_attention',
+//                   error?, photo_ids?: string[], created_at, updated_at }
+//
+//   pending_photos
+//     Photo blobs waiting to be uploaded to /api/uploads. Each entry:
+//       { id (local uuid), inspection_id, item_id, blob, mime,
+//         created_at, status: 'queued'|'uploading'|'uploaded'|'failed',
+//         staging_path? (set after a successful /api/uploads call) }
+//
+// All async functions return resolved Promises with the new state when
+// successful. They throw on schema/DB errors. Callers can subscribe to
+// per-inspection updates via subscribe(inspectionId, cb).
+
+import { openDB } from 'idb';
+
+const DB_NAME = 'delta-inspections';
+const DB_VERSION = 1;
+
+let _dbPromise = null;
+
+function getDb() {
+  if (!_dbPromise) {
+    _dbPromise = openDB(DB_NAME, DB_VERSION, {
+      upgrade(db) {
+        if (!db.objectStoreNames.contains('inspection_cache')) {
+          db.createObjectStore('inspection_cache', { keyPath: 'id' });
+        }
+        if (!db.objectStoreNames.contains('pending_actions')) {
+          const s = db.createObjectStore('pending_actions', { keyPath: 'id' });
+          s.createIndex('by_inspection', 'inspection_id');
+          s.createIndex('by_status', 'status');
+        }
+        if (!db.objectStoreNames.contains('pending_photos')) {
+          const s = db.createObjectStore('pending_photos', { keyPath: 'id' });
+          s.createIndex('by_inspection_item', ['inspection_id', 'item_id']);
+          s.createIndex('by_status', 'status');
+        }
+      },
+    });
+  }
+  return _dbPromise;
+}
+
+// ── Pub/sub for in-process subscribers ─────────────────────────────────────
+const subscribers = new Map(); // inspection_id → Set<cb>
+
+function notify(inspectionId) {
+  const set = subscribers.get(inspectionId);
+  if (!set) return;
+  for (const cb of set) {
+    try {
+      cb();
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('store subscriber threw', e);
+    }
+  }
+  // Also notify global "any change" listeners (registered with key '*').
+  const all = subscribers.get('*');
+  if (all) {
+    for (const cb of all) {
+      try {
+        cb();
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.error('store subscriber threw', e);
+      }
+    }
+  }
+}
+
+export function subscribe(inspectionId, cb) {
+  const key = inspectionId || '*';
+  if (!subscribers.has(key)) subscribers.set(key, new Set());
+  subscribers.get(key).add(cb);
+  return () => subscribers.get(key)?.delete(cb);
+}
+
+// ── inspection_cache ────────────────────────────────────────────────────────
+export async function putInspectionCache(snapshot) {
+  // snapshot shape mirrors the server's GET /api/inspections/:id response:
+  //   { id, work_order_id, ..., template, sections: [{section, items: [...]}] }
+  if (!snapshot?.id) throw new Error('snapshot.id required');
+  const db = await getDb();
+  await db.put('inspection_cache', { ...snapshot, _cached_at: Date.now() });
+  notify(snapshot.id);
+}
+
+export async function getInspectionCache(inspectionId) {
+  const db = await getDb();
+  return db.get('inspection_cache', inspectionId);
+}
+
+// ── pending_actions ────────────────────────────────────────────────────────
+// Item-mark actions are deduped by (inspection_id, item_id) — newest tap
+// replaces older. Finalize/other actions get unique ids.
+function actionIdFor({ kind, inspection_id, item_id }) {
+  if (kind === 'mark_item') {
+    return `mark:${inspection_id}:${item_id}`;
+  }
+  if (kind === 'finalize') {
+    return `finalize:${inspection_id}`;
+  }
+  return `${kind}:${inspection_id}:${crypto.randomUUID()}`;
+}
+
+export async function enqueueAction({
+  kind, // 'mark_item' | 'finalize'
+  inspection_id,
+  item_id,
+  payload,
+  photo_ids, // optional — local IDs from pending_photos this action depends on
+}) {
+  if (!kind || !inspection_id) throw new Error('kind + inspection_id required');
+  const db = await getDb();
+  const id = actionIdFor({ kind, inspection_id, item_id });
+  const now = Date.now();
+  const existing = await db.get('pending_actions', id);
+  const action = {
+    id,
+    kind,
+    inspection_id,
+    item_id: item_id ?? null,
+    payload,
+    photo_ids: photo_ids ?? [],
+    attempts: 0,
+    status: 'queued',
+    error: null,
+    created_at: existing?.created_at ?? now,
+    updated_at: now,
+  };
+  await db.put('pending_actions', action);
+  notify(inspection_id);
+  return action;
+}
+
+export async function getActionsForInspection(inspectionId) {
+  const db = await getDb();
+  return db.getAllFromIndex('pending_actions', 'by_inspection', inspectionId);
+}
+
+export async function getAllQueuedActions() {
+  const db = await getDb();
+  const tx = db.transaction('pending_actions', 'readonly');
+  const all = await tx.store.getAll();
+  return all.filter((a) => a.status !== 'needs_attention');
+}
+
+export async function getActionsByStatus(status) {
+  const db = await getDb();
+  return db.getAllFromIndex('pending_actions', 'by_status', status);
+}
+
+export async function updateActionStatus(id, patch) {
+  const db = await getDb();
+  const current = await db.get('pending_actions', id);
+  if (!current) return null;
+  const next = { ...current, ...patch, updated_at: Date.now() };
+  await db.put('pending_actions', next);
+  notify(current.inspection_id);
+  return next;
+}
+
+export async function deleteAction(id) {
+  const db = await getDb();
+  const current = await db.get('pending_actions', id);
+  await db.delete('pending_actions', id);
+  if (current?.inspection_id) notify(current.inspection_id);
+}
+
+// ── pending_photos ────────────────────────────────────────────────────────
+export async function addPhoto({ inspection_id, item_id, blob, mime }) {
+  if (!inspection_id || !item_id || !blob) {
+    throw new Error('inspection_id + item_id + blob required');
+  }
+  const db = await getDb();
+  const photo = {
+    id: crypto.randomUUID(),
+    inspection_id,
+    item_id,
+    blob,
+    mime: mime || blob.type || 'image/jpeg',
+    status: 'queued',
+    staging_path: null,
+    created_at: Date.now(),
+  };
+  await db.put('pending_photos', photo);
+  notify(inspection_id);
+  return photo;
+}
+
+export async function getPhotosForItem(inspectionId, itemId) {
+  const db = await getDb();
+  return db.getAllFromIndex('pending_photos', 'by_inspection_item', [
+    inspectionId,
+    itemId,
+  ]);
+}
+
+export async function getPhotoById(id) {
+  const db = await getDb();
+  return db.get('pending_photos', id);
+}
+
+export async function updatePhotoStatus(id, patch) {
+  const db = await getDb();
+  const current = await db.get('pending_photos', id);
+  if (!current) return null;
+  const next = { ...current, ...patch };
+  await db.put('pending_photos', next);
+  notify(current.inspection_id);
+  return next;
+}
+
+export async function deletePhoto(id) {
+  const db = await getDb();
+  const current = await db.get('pending_photos', id);
+  await db.delete('pending_photos', id);
+  if (current?.inspection_id) notify(current.inspection_id);
+}
+
+// ── Aggregate read for the UI's "X queued · Y syncing · Z need attention" ──
+export async function getSyncCounts(inspectionId) {
+  const db = await getDb();
+  const actions = inspectionId
+    ? await db.getAllFromIndex('pending_actions', 'by_inspection', inspectionId)
+    : await db.getAll('pending_actions');
+  const photos = inspectionId
+    ? (await db.getAll('pending_photos')).filter(
+        (p) => p.inspection_id === inspectionId,
+      )
+    : await db.getAll('pending_photos');
+  const queued = actions.filter((a) => a.status === 'queued').length;
+  const syncing = actions.filter((a) => a.status === 'syncing').length;
+  const needs_attention = actions.filter(
+    (a) => a.status === 'needs_attention',
+  ).length;
+  const photo_queued = photos.filter((p) => p.status === 'queued').length;
+  const photo_uploading = photos.filter((p) => p.status === 'uploading').length;
+  return {
+    queued,
+    syncing,
+    needs_attention,
+    photo_queued,
+    photo_uploading,
+    pending_total: queued + syncing + photo_queued + photo_uploading,
+  };
+}
+
+// Test helper — wipe the DB. Not used in production.
+export async function _resetForTests() {
+  const db = await getDb();
+  await db.clear('inspection_cache');
+  await db.clear('pending_actions');
+  await db.clear('pending_photos');
+}

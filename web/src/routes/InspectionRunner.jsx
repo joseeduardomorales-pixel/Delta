@@ -1,11 +1,20 @@
-// /work-orders/:woId/inspect/:inspectionId — checklist walker.
+// /work-orders/:woId/inspect/:inspectionId — offline-first checklist runner.
 //
-// Tech walks the asset and marks each item OK / Issue / N/A.
-//   OK     → result='pass' (or 'yes' for yes/no items where the good answer is yes)
-//   Issue  → opens a modal that REQUIRES a description AND at least one photo
-//             (max 4). On submit, the server records the fail, auto-creates
-//             an open issue on the asset, and attaches the photos to the WO.
-//   N/A    → result='na'; only available on pass/fail items.
+// The tablet is the source of truth while the tech is walking the trailer.
+// Every tap writes to IndexedDB and updates the visible state instantly
+// (zero perceived latency). A background sync engine drains queued actions
+// to the server when online. The tech can lose connectivity, close the tab,
+// switch tablets — work is preserved on the device.
+//
+// Two buttons per pass/fail item:
+//   ✓ OK     → enqueues mark_item with inspection_result='pass'
+//   ✗ ISSUE  → opens a modal that requires a description + photo;
+//              on submit, photos are stored as Blobs in IndexedDB and
+//              the mark_item action is enqueued with photo_ids.
+// Final-assessment items show YES/NO; NO opens the same modal.
+//
+// Sign & submit enqueues a 'finalize' action. The UI shows the inspection
+// as complete locally; the server is updated when sync drains.
 
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
@@ -14,17 +23,17 @@ import {
   ChevronLeft,
   Check,
   X,
-  Minus,
   Loader2,
   AlertTriangle,
   CheckCircle2,
   ClipboardCheck,
   ImageOff,
   Camera,
+  WifiOff,
+  RotateCw,
 } from 'lucide-react';
 import { useAuth } from '../auth/AuthProvider.jsx';
-import { API_URL } from '../lib/supabase.js';
-import { uploadPhotos } from '../lib/upload.js';
+import { API_URL, supabase } from '../lib/supabase.js';
 import {
   Header,
   Card,
@@ -39,50 +48,81 @@ import {
 } from '../components/ui/index.js';
 import { cn } from '../lib/cn.js';
 import { woLabel, inspectionLabel } from '../lib/numbers.js';
+import { useInspectionData } from '../lib/useInspectionData.js';
+import { useSyncEngine } from '../lib/useSyncEngine.js';
+import {
+  enqueueAction,
+  addPhoto,
+  deletePhoto,
+  getPhotosForItem,
+} from '../lib/inspectionStore.js';
 
 const easeOut = [0.16, 1, 0.3, 1];
 const MAX_PHOTOS = 4;
 
+// Pull a fresh access token via supabase — used by the sync engine in the
+// SW context AND the foreground. Falls back to the React auth context for
+// foreground reads.
+async function resolveAccessToken() {
+  const { data } = await supabase.auth.getSession();
+  return data?.session?.access_token || '';
+}
+
 // ── Issue (fail) modal ──────────────────────────────────────────────────────
-// Description AND at least one photo (max 4) are both REQUIRED before submit.
-// When re-opened on an already-failed item, pre-fills with existing notes +
-// shows existing photos with a remove button. Server applies the diff.
-function IssueModal({ open, item, onClose, onConfirm, busy, accessToken }) {
+function IssueModal({ open, item, inspectionId, onClose, onConfirm, busy }) {
   const tpl = item?.template_item || {};
   const isMeasurement = tpl.kind === 'measurement';
   const isYesNo = tpl.kind === 'yes_no';
 
   const [notes, setNotes] = useState('');
   const [measurement, setMeasurement] = useState('');
-  // Existing photos (server-side, with `id` + `url`). Marked
-  // `pending_remove: true` when the user clicks X — submit sends those ids
-  // in remove_photo_ids and removes them locally after success.
+  // Existing photos (from server). User can mark for removal.
   const [existingPhotos, setExistingPhotos] = useState([]);
-  // New photos staged in this modal session.
-  const [newPhotos, setNewPhotos] = useState([]);
+  // Pending photos already stored locally (from a previous session).
+  const [localPhotos, setLocalPhotos] = useState([]);
+  // Files picked in THIS modal session, not yet committed.
+  const [newFiles, setNewFiles] = useState([]);
   const [submitErr, setSubmitErr] = useState(null);
   const nextId = useRef(1);
 
   useEffect(() => {
+    let alive = true;
     if (open && item) {
       setNotes(item.notes || '');
       setMeasurement(item.measurement_value ?? '');
-      setExistingPhotos((item.photos || []).map((p) => ({ ...p, pending_remove: false })));
-      setNewPhotos([]);
+      const server = (item.photos || []).filter((p) => !p.local);
+      setExistingPhotos(server.map((p) => ({ ...p, pending_remove: false })));
+      // Hydrate any locally-stored photos for this item from IndexedDB.
+      getPhotosForItem(inspectionId, item.id).then((photos) => {
+        if (!alive) return;
+        setLocalPhotos(
+          photos.map((p) => ({
+            id: p.id,
+            blob: p.blob,
+            url: URL.createObjectURL(p.blob),
+            status: p.status, // queued | uploading | uploaded | failed
+            pending_remove: false,
+          })),
+        );
+      });
+      setNewFiles([]);
       setSubmitErr(null);
     } else if (!open) {
-      // Cleanup any leftover object URLs.
-      for (const p of newPhotos) {
+      for (const p of newFiles) {
         if (p.previewUrl) URL.revokeObjectURL(p.previewUrl);
       }
     }
+    return () => {
+      alive = false;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, item?.id]);
+  }, [open, item?.id, inspectionId]);
 
   const visibleExisting = existingPhotos.filter((p) => !p.pending_remove);
-  const totalCount = visibleExisting.length + newPhotos.filter((p) => p.status !== 'failed').length;
+  const visibleLocal = localPhotos.filter((p) => !p.pending_remove);
+  const totalCount = visibleExisting.length + visibleLocal.length + newFiles.length;
 
-  async function onFiles(files) {
+  function onFiles(files) {
     const remaining = MAX_PHOTOS - totalCount;
     if (remaining <= 0) return;
     const next = Array.from(files)
@@ -91,33 +131,12 @@ function IssueModal({ open, item, onClose, onConfirm, busy, accessToken }) {
         localId: String(nextId.current++),
         file: f,
         previewUrl: URL.createObjectURL(f),
-        status: 'uploading',
       }));
-    setNewPhotos((curr) => [...curr, ...next]);
-    for (const p of next) {
-      try {
-        const { uploads } = await uploadPhotos({ files: [p.file], accessToken });
-        const u = uploads[0];
-        if (!u) throw new Error('upload rejected');
-        setNewPhotos((curr) =>
-          curr.map((x) =>
-            x.localId === p.localId
-              ? { ...x, status: 'uploaded', staging_path: u.staging_path }
-              : x,
-          ),
-        );
-      } catch {
-        setNewPhotos((curr) =>
-          curr.map((x) =>
-            x.localId === p.localId ? { ...x, status: 'failed' } : x,
-          ),
-        );
-      }
-    }
+    setNewFiles((curr) => [...curr, ...next]);
   }
 
-  function removeNewPhoto(localId) {
-    setNewPhotos((curr) => {
+  function removeNewFile(localId) {
+    setNewFiles((curr) => {
       const p = curr.find((x) => x.localId === localId);
       if (p?.previewUrl) URL.revokeObjectURL(p.previewUrl);
       return curr.filter((x) => x.localId !== localId);
@@ -129,18 +148,25 @@ function IssueModal({ open, item, onClose, onConfirm, busy, accessToken }) {
       curr.map((p) => (p.id === id ? { ...p, pending_remove: true } : p)),
     );
   }
-
-  function undoRemoval(id) {
+  function undoExistingRemoval(id) {
     setExistingPhotos((curr) =>
       curr.map((p) => (p.id === id ? { ...p, pending_remove: false } : p)),
     );
   }
+  function markLocalForRemoval(id) {
+    setLocalPhotos((curr) =>
+      curr.map((p) => (p.id === id ? { ...p, pending_remove: true } : p)),
+    );
+  }
+  function undoLocalRemoval(id) {
+    setLocalPhotos((curr) =>
+      curr.map((p) => (p.id === id ? { ...p, pending_remove: false } : p)),
+    );
+  }
 
-  const uploadedNewCount = newPhotos.filter((p) => p.status === 'uploaded').length;
-  const anyUploading = newPhotos.some((p) => p.status === 'uploading');
   const descOk = notes.trim().length >= 3;
-  const photosOk = visibleExisting.length + uploadedNewCount >= 1;
-  const canSubmit = descOk && photosOk && !anyUploading && !busy;
+  const photosOk = visibleExisting.length + visibleLocal.length + newFiles.length >= 1;
+  const canSubmit = descOk && photosOk && !busy;
 
   async function submit() {
     setSubmitErr(null);
@@ -149,9 +175,6 @@ function IssueModal({ open, item, onClose, onConfirm, busy, accessToken }) {
     const payload = {
       inspection_result: result,
       notes: notes.trim(),
-      attachments: newPhotos
-        .filter((p) => p.status === 'uploaded' && p.staging_path)
-        .map((p) => ({ staging_path: p.staging_path })),
       remove_photo_ids: existingPhotos
         .filter((p) => p.pending_remove)
         .map((p) => p.id),
@@ -161,7 +184,17 @@ function IssueModal({ open, item, onClose, onConfirm, busy, accessToken }) {
       if (Number.isFinite(n)) payload.measurement_value = n;
     }
     try {
-      await onConfirm(item.id, payload);
+      // localPhotos marked for removal: delete from IndexedDB BEFORE enqueue
+      const toDelete = localPhotos.filter((p) => p.pending_remove);
+      for (const p of toDelete) await deletePhoto(p.id);
+
+      await onConfirm(item.id, {
+        payload,
+        newFileBlobs: newFiles.map((f) => f.file),
+        keepLocalPhotoIds: localPhotos
+          .filter((p) => !p.pending_remove)
+          .map((p) => p.id),
+      });
     } catch (e) {
       setSubmitErr(e.message);
     }
@@ -187,7 +220,6 @@ function IssueModal({ open, item, onClose, onConfirm, busy, accessToken }) {
       }
     >
       <div className="space-y-4">
-        {/* The item being failed — read-only context */}
         <div className="rounded-lg border border-border bg-muted/40 px-4 py-3">
           <p className="text-[10px] uppercase tracking-widest text-muted-foreground">
             Item
@@ -221,7 +253,6 @@ function IssueModal({ open, item, onClose, onConfirm, busy, accessToken }) {
           }
         />
 
-        {/* Photo grid: existing + new + add slot, capped at 4 visible */}
         <div>
           <div className="flex items-baseline justify-between mb-2">
             <div className="text-xs font-medium text-muted-foreground">
@@ -232,83 +263,42 @@ function IssueModal({ open, item, onClose, onConfirm, busy, accessToken }) {
             </span>
           </div>
           <div className="grid grid-cols-4 gap-2">
-            {/* Existing photos already saved on the item */}
             {existingPhotos.map((p) => (
-              <div
+              <PhotoTile
                 key={`e-${p.id}`}
-                className={cn(
-                  'relative aspect-square rounded-lg overflow-hidden border',
-                  p.pending_remove ? 'border-danger/60 opacity-50' : 'border-success/50',
-                )}
-              >
-                {p.url ? (
-                  <img src={p.url} alt="" className="w-full h-full object-cover" />
-                ) : (
-                  <div className="w-full h-full bg-muted flex items-center justify-center text-muted-foreground">
-                    <ImageOff size={20} />
-                  </div>
-                )}
-                {p.pending_remove ? (
-                  <button
-                    type="button"
-                    onClick={() => undoRemoval(p.id)}
-                    className="absolute inset-0 flex items-center justify-center bg-danger/70 text-white text-[10px] uppercase tracking-wider hover:bg-danger/85"
-                  >
-                    will be removed · tap to undo
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => markExistingForRemoval(p.id)}
-                    className="absolute top-1 right-1 inline-flex h-6 w-6 items-center justify-center rounded-full bg-foreground/70 text-background hover:bg-foreground"
-                    aria-label="Remove photo"
-                  >
-                    <X size={12} />
-                  </button>
-                )}
-              </div>
+                src={p.url}
+                pendingRemove={p.pending_remove}
+                onRemove={() => markExistingForRemoval(p.id)}
+                onUndoRemove={() => undoExistingRemoval(p.id)}
+                tone="success"
+              />
             ))}
-            {/* New photos staged in this modal session */}
-            {newPhotos.map((p) => (
-              <div
+            {localPhotos.map((p) => (
+              <PhotoTile
+                key={`l-${p.id}`}
+                src={p.url}
+                pendingRemove={p.pending_remove}
+                onRemove={() => markLocalForRemoval(p.id)}
+                onUndoRemove={() => undoLocalRemoval(p.id)}
+                tone={p.status === 'failed' ? 'danger' : 'warning'}
+                badge={
+                  p.status === 'queued'
+                    ? 'queued'
+                    : p.status === 'uploading'
+                      ? 'uploading'
+                      : p.status === 'failed'
+                        ? 'failed'
+                        : null
+                }
+              />
+            ))}
+            {newFiles.map((p) => (
+              <PhotoTile
                 key={`n-${p.localId}`}
-                className={cn(
-                  'relative aspect-square rounded-lg overflow-hidden border',
-                  p.status === 'uploaded' && 'border-success/50',
-                  p.status === 'uploading' && 'border-border',
-                  p.status === 'failed' && 'border-danger/60',
-                )}
-              >
-                {p.previewUrl ? (
-                  <img
-                    src={p.previewUrl}
-                    alt=""
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  <div className="w-full h-full bg-muted flex items-center justify-center text-muted-foreground">
-                    <ImageOff size={20} />
-                  </div>
-                )}
-                {p.status === 'uploading' && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-foreground/40">
-                    <Loader2 size={18} className="animate-spin text-white" />
-                  </div>
-                )}
-                {p.status === 'failed' && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-danger/70 text-white text-[10px] uppercase tracking-wider">
-                    failed
-                  </div>
-                )}
-                <button
-                  type="button"
-                  onClick={() => removeNewPhoto(p.localId)}
-                  className="absolute top-1 right-1 inline-flex h-6 w-6 items-center justify-center rounded-full bg-foreground/70 text-background hover:bg-foreground"
-                  aria-label="Remove photo"
-                >
-                  <X size={12} />
-                </button>
-              </div>
+                src={p.previewUrl}
+                onRemove={() => removeNewFile(p.localId)}
+                tone="accent"
+              />
             ))}
             {totalCount < MAX_PHOTOS && (
               <label
@@ -355,6 +345,55 @@ function IssueModal({ open, item, onClose, onConfirm, busy, accessToken }) {
   );
 }
 
+function PhotoTile({ src, onRemove, onUndoRemove, pendingRemove, tone, badge }) {
+  const toneBorder = {
+    success: 'border-success/50',
+    warning: 'border-warning/50',
+    danger: 'border-danger/60',
+    accent: 'border-accent/50',
+  }[tone || 'accent'];
+  return (
+    <div
+      className={cn(
+        'relative aspect-square rounded-lg overflow-hidden border',
+        toneBorder,
+        pendingRemove && 'opacity-40',
+      )}
+    >
+      {src ? (
+        <img src={src} alt="" className="w-full h-full object-cover" />
+      ) : (
+        <div className="w-full h-full bg-muted flex items-center justify-center text-muted-foreground">
+          <ImageOff size={20} />
+        </div>
+      )}
+      {badge && (
+        <span className="absolute bottom-1 left-1 rounded bg-foreground/70 text-background text-[9px] uppercase tracking-wider px-1.5 py-0.5">
+          {badge}
+        </span>
+      )}
+      {pendingRemove ? (
+        <button
+          type="button"
+          onClick={onUndoRemove}
+          className="absolute inset-0 flex items-center justify-center bg-danger/70 text-white text-[10px] uppercase tracking-wider hover:bg-danger/85"
+        >
+          will be removed · tap to undo
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={onRemove}
+          className="absolute top-1 right-1 inline-flex h-6 w-6 items-center justify-center rounded-full bg-foreground/70 text-background hover:bg-foreground"
+          aria-label="Remove photo"
+        >
+          <X size={12} />
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ── One row per inspection item ─────────────────────────────────────────────
 function ItemRow({ item, onMark, onOpenIssue, busy }) {
   const tpl = item.template_item || {};
@@ -368,7 +407,6 @@ function ItemRow({ item, onMark, onOpenIssue, busy }) {
   const passed =
     result === 'pass' ||
     (isYesNo && tpl.good_answer && result === tpl.good_answer);
-  const skipped = result === 'na';
 
   return (
     <div
@@ -376,7 +414,6 @@ function ItemRow({ item, onMark, onOpenIssue, busy }) {
         'rounded-lg border px-4 py-3.5 transition-colors',
         passed && 'border-success/40 bg-success-bg/30',
         failed && 'border-danger/40 bg-danger-bg/30',
-        skipped && 'border-border bg-muted/30 opacity-70',
         !result && 'border-border bg-card',
       )}
     >
@@ -401,6 +438,11 @@ function ItemRow({ item, onMark, onOpenIssue, busy }) {
             <p className="mt-1 text-xs text-foreground">
               Value: {item.measurement_value}
               {tpl.measurement_unit ? ` ${tpl.measurement_unit}` : ''}
+            </p>
+          )}
+          {item._pending_sync === 'needs_attention' && (
+            <p className="mt-1 text-xs text-danger flex items-center gap-1">
+              <AlertTriangle size={11} /> Needs attention — re-tap to retry.
             </p>
           )}
         </div>
@@ -468,9 +510,6 @@ function BigButton({ tone, active, children, ...props }) {
     danger: active
       ? 'bg-danger text-white border-danger shadow-sm'
       : 'border-border text-danger hover:bg-danger-bg hover:border-danger/40',
-    neutral: active
-      ? 'bg-muted-foreground text-background border-muted-foreground shadow-sm'
-      : 'border-border text-muted-foreground hover:bg-muted hover:border-muted-foreground/40',
   };
   return (
     <button
@@ -491,154 +530,110 @@ function BigButton({ tone, active, children, ...props }) {
   );
 }
 
-// ── Page ──────────────────────────────────────────────────────────────────
+// ── Page ────────────────────────────────────────────────────────────────────
 export default function InspectionRunner() {
   const { woId, inspectionId } = useParams();
   const { session, profile, signOut } = useAuth();
   const { push: pushToast } = useToast();
   const navigate = useNavigate();
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState(null);
-  const [busyItemId, setBusyItemId] = useState(null);
+  const [issueFor, setIssueFor] = useState(null);
+  const [issueBusy, setIssueBusy] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
-  const [issueFor, setIssueFor] = useState(null); // item currently being failed
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setErr(null);
-    try {
-      const r = await fetch(`${API_URL}/api/inspections/${inspectionId}`, {
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const json = await r.json();
-      setData(json);
-    } catch (e) {
-      setErr(e.message);
-    } finally {
-      setLoading(false);
-    }
-  }, [inspectionId, session.access_token]);
+  const { data, loading, error } = useInspectionData({
+    inspectionId,
+    accessToken: session.access_token,
+    apiUrl: API_URL,
+  });
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  const { counts, online } = useSyncEngine({
+    inspectionId,
+    apiUrl: API_URL,
+    getAccessToken: resolveAccessToken,
+  });
 
+  // mark() = simple OK / YES / N/A path (no photos). Optimistic via the
+  // local store — UI updates the moment the action lands in IndexedDB.
   async function mark(itemId, payload) {
-    setBusyItemId(itemId);
+    await enqueueAction({
+      kind: 'mark_item',
+      inspection_id: inspectionId,
+      item_id: itemId,
+      payload,
+    });
+  }
+
+  // Issue submission — store blobs locally, enqueue with photo_ids.
+  async function submitIssue(itemId, { payload, newFileBlobs, keepLocalPhotoIds }) {
+    setIssueBusy(true);
     try {
-      const r = await fetch(
-        `${API_URL}/api/inspections/${inspectionId}/items/${itemId}`,
-        {
-          method: 'PATCH',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.access_token}`,
-          },
-          body: JSON.stringify(payload),
-        },
-      );
-      const resp = await r.json();
-      if (!r.ok) {
-        throw new Error(resp.message || resp.error || `HTTP ${r.status}`);
+      const newPhotoIds = [];
+      for (const blob of newFileBlobs) {
+        const p = await addPhoto({
+          inspection_id: inspectionId,
+          item_id: itemId,
+          blob,
+          mime: blob.type,
+        });
+        newPhotoIds.push(p.id);
       }
-      // No per-issue toast — the progress bar count and the
-      // "N issues logged on this asset" badge in the footer already
-      // communicate this. Toasts stack up and cover items while the
-      // tech is walking the trailer.
-      // Patch local state with the updated item.
-      setData((d) => {
-        if (!d) return d;
-        return {
-          ...d,
-          sections: d.sections.map((s) => ({
-            ...s,
-            items: s.items.map((i) =>
-              i.id === itemId
-                ? {
-                    ...i,
-                    inspection_result: resp.item.inspection_result,
-                    status: resp.item.status,
-                    completed_at: resp.item.completed_at,
-                    notes: resp.item.notes ?? i.notes,
-                  }
-                : i,
-            ),
-          })),
-        };
+      await enqueueAction({
+        kind: 'mark_item',
+        inspection_id: inspectionId,
+        item_id: itemId,
+        payload,
+        photo_ids: [...keepLocalPhotoIds, ...newPhotoIds],
       });
-      // Close the issue modal if it was open for this item.
-      setIssueFor((cur) => (cur?.id === itemId ? null : cur));
-      // If this was an issue submission (added/removed photos or notes),
-      // refresh from the server so the next edit sees the new photo state.
-      const involvedPhotos =
-        Array.isArray(payload.attachments) || Array.isArray(payload.remove_photo_ids);
-      if (involvedPhotos) {
-        // Fire-and-forget — current state already shows the right buttons,
-        // we just want fresh photo URLs for the next edit.
-        load();
-      }
+      setIssueFor(null);
     } catch (e) {
-      pushToast({ tone: 'danger', title: 'Save failed', text: e.message });
+      pushToast({ tone: 'danger', title: 'Couldn’t save', text: e.message });
       throw e;
     } finally {
-      setBusyItemId(null);
+      setIssueBusy(false);
     }
   }
 
-  // Progress + counts
-  const counts = useMemo(() => {
-    if (!data) return { total: 0, done: 0, pass: 0, fail: 0, na: 0 };
-    let total = 0,
-      done = 0,
-      pass = 0,
-      fail = 0,
-      na = 0;
-    for (const s of data.sections) {
+  // Counts for progress bar
+  const progress = useMemo(() => {
+    if (!data) return { total: 0, done: 0, pass: 0, fail: 0 };
+    let total = 0, done = 0, pass = 0, fail = 0;
+    for (const s of data.sections || []) {
       for (const i of s.items) {
         total += 1;
         if (i.inspection_result) done += 1;
         const tpl = i.template_item || {};
         if (tpl.kind === 'yes_no') {
-          if (tpl.good_answer && i.inspection_result && i.inspection_result !== tpl.good_answer)
-            fail += 1;
+          if (tpl.good_answer && i.inspection_result && i.inspection_result !== tpl.good_answer) fail += 1;
           else if (tpl.good_answer && i.inspection_result === tpl.good_answer) pass += 1;
         } else {
           if (i.inspection_result === 'pass') pass += 1;
           if (i.inspection_result === 'fail') fail += 1;
-          if (i.inspection_result === 'na') na += 1;
         }
       }
     }
-    return { total, done, pass, fail, na };
+    return { total, done, pass, fail };
   }, [data]);
 
-  const pct = counts.total ? Math.round((counts.done / counts.total) * 100) : 0;
-  const allDone = counts.total > 0 && counts.done === counts.total;
+  const pct = progress.total ? Math.round((progress.done / progress.total) * 100) : 0;
+  const allDone = progress.total > 0 && progress.done === progress.total;
   const isCompleted = data?.inspection?.completed_at;
+  const allSynced = counts.pending_total === 0;
 
   async function finalize() {
     setFinalizing(true);
     try {
-      const r = await fetch(`${API_URL}/api/inspections/${inspectionId}/complete`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({}),
+      await enqueueAction({
+        kind: 'finalize',
+        inspection_id: inspectionId,
+        payload: {},
       });
-      const resp = await r.json();
-      if (!r.ok) throw new Error(resp.error || `HTTP ${r.status}`);
       pushToast({
         tone: 'success',
         title: 'Inspection complete',
-        text: `${resp.counts?.pass || 0} OK · ${(resp.counts?.fail || 0) + (resp.counts?.no || 0)} issues`,
+        text: `${progress.pass} OK · ${progress.fail} issues — syncing to admin.`,
       });
       const unit = data?.inspection?.work_order?.asset_unit_number;
-      if (unit) navigate(`/assets/${encodeURIComponent(unit)}`);
-      else navigate('/');
+      navigate(unit ? `/assets/${encodeURIComponent(unit)}` : '/');
     } catch (e) {
       pushToast({ tone: 'danger', title: 'Could not finalize', text: e.message });
     } finally {
@@ -652,8 +647,8 @@ export default function InspectionRunner() {
         profile={profile}
         onSignOut={signOut}
         context={
-          data
-            ? `Inspecting ${data.inspection.work_order?.asset_unit_number || '?'}`
+          data?.inspection?.work_order
+            ? `Inspecting ${data.inspection.work_order.asset_unit_number}`
             : 'Inspection'
         }
         sticky
@@ -698,29 +693,66 @@ export default function InspectionRunner() {
           )}
         </motion.div>
 
-        {loading && (
+        {loading && !data && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 size={16} className="animate-spin" />
             Loading…
           </div>
         )}
-        {err && (
+        {error && !data && (
           <Banner tone="danger" title="Couldn't load inspection">
-            {err}
+            {error}
           </Banner>
         )}
 
-        {!loading && !err && data && (
+        {data && (
           <>
-            {/* Sticky progress bar */}
+            {/* Sync status banner — only renders when something needs attention */}
+            {(!online || counts.needs_attention > 0) && (
+              <div
+                className={cn(
+                  'sticky top-14 md:top-16 -mx-4 md:mx-0 px-4 md:px-5 py-2.5 mb-2 z-40',
+                  'flex items-center justify-between gap-3 flex-wrap',
+                  !online
+                    ? 'bg-warning-bg text-warning border-y border-warning/30'
+                    : 'bg-danger-bg text-danger border-y border-danger/30',
+                  'md:rounded-xl md:border',
+                )}
+              >
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  {!online ? (
+                    <>
+                      <WifiOff size={16} />
+                      Offline — {counts.pending_total} change
+                      {counts.pending_total === 1 ? '' : 's'} queued, will sync
+                      when reconnected.
+                    </>
+                  ) : (
+                    <>
+                      <AlertTriangle size={16} />
+                      {counts.needs_attention} item
+                      {counts.needs_attention === 1 ? '' : 's'} need attention.
+                    </>
+                  )}
+                </div>
+                {online && counts.needs_attention === 0 && counts.pending_total > 0 && (
+                  <span className="text-xs flex items-center gap-1">
+                    <RotateCw size={12} className="animate-spin" />
+                    {counts.pending_total} syncing
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Progress bar */}
             <div className="sticky top-14 md:top-16 -mx-4 md:mx-0 px-4 md:px-5 py-3 mb-6 z-30 bg-background/95 backdrop-blur border-b border-border md:border md:rounded-xl md:bg-card md:shadow-sm">
               <div className="flex items-center justify-between text-xs mb-2 flex-wrap gap-2">
                 <div className="flex items-center gap-3">
                   <span className="text-foreground">
-                    <span className="font-semibold">{counts.done}</span>/{counts.total} done
+                    <span className="font-semibold">{progress.done}</span>/{progress.total} done
                   </span>
-                  <span className="text-success">{counts.pass} OK</span>
-                  <span className="text-danger">{counts.fail} issues</span>
+                  <span className="text-success">{progress.pass} OK</span>
+                  <span className="text-danger">{progress.fail} issues</span>
                 </div>
                 <span className="text-muted-foreground font-mono">{pct}%</span>
               </div>
@@ -728,16 +760,16 @@ export default function InspectionRunner() {
                 <div
                   className={cn(
                     'h-full transition-all',
-                    counts.fail > 0 ? 'bg-warning' : 'bg-success',
+                    progress.fail > 0 ? 'bg-warning' : 'bg-success',
                   )}
                   style={{ width: `${pct}%` }}
                 />
               </div>
             </div>
 
-            {/* Sections — each gets a clear, larger heading with its own item count */}
+            {/* Sections */}
             <div className="space-y-10">
-              {data.sections.map((sec) => {
+              {(data.sections || []).map((sec) => {
                 const sectionDone = sec.items.filter((i) => i.inspection_result).length;
                 const sectionFail = sec.items.filter(
                   (i) =>
@@ -767,7 +799,6 @@ export default function InspectionRunner() {
                         <ItemRow
                           key={it.id}
                           item={it}
-                          busy={busyItemId === it.id}
                           onMark={mark}
                           onOpenIssue={(item) => setIssueFor(item)}
                         />
@@ -778,7 +809,6 @@ export default function InspectionRunner() {
               })}
             </div>
 
-            {/* Footer — finalize */}
             <div className="mt-10 mb-12">
               <Card className="p-5">
                 {isCompleted ? (
@@ -791,25 +821,21 @@ export default function InspectionRunner() {
                   <>
                     <div className="flex items-baseline justify-between gap-3 mb-2 flex-wrap">
                       <h2 className="font-display text-xl">Sign & submit</h2>
-                      {counts.fail > 0 && (
+                      {progress.fail > 0 && (
                         <Badge tone="warning">
-                          {counts.fail} issue{counts.fail === 1 ? '' : 's'} logged on this asset
+                          {progress.fail} issue{progress.fail === 1 ? '' : 's'} logged on this asset
                         </Badge>
                       )}
                     </div>
                     <p className="text-sm text-muted-foreground">
-                      Submitting signs the inspection with a timestamp. Any
-                      issues are already open on{' '}
-                      <span className="font-mono">
-                        {data.inspection.work_order?.asset_unit_number}
-                      </span>{' '}
-                      and visible to the next tech.
+                      Submitting signs the inspection with a timestamp. Items
+                      sync to admin in the background — works offline too.
                     </p>
                     {!allDone && (
                       <div className="mt-3 flex items-center gap-2 text-xs text-warning">
                         <AlertTriangle size={14} />
-                        {counts.total - counts.done} item
-                        {counts.total - counts.done === 1 ? '' : 's'} still pending.
+                        {progress.total - progress.done} item
+                        {progress.total - progress.done === 1 ? '' : 's'} still pending.
                       </div>
                     )}
                     <div className="mt-4 flex justify-end">
@@ -833,10 +859,10 @@ export default function InspectionRunner() {
       <IssueModal
         open={Boolean(issueFor)}
         item={issueFor}
+        inspectionId={inspectionId}
         onClose={() => setIssueFor(null)}
-        onConfirm={mark}
-        busy={busyItemId === issueFor?.id}
-        accessToken={session.access_token}
+        onConfirm={submitIssue}
+        busy={issueBusy}
       />
     </div>
   );

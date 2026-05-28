@@ -489,10 +489,33 @@ IN SCOPE (across Phases 1–4):
     Render deploy, delta.coldcargo.us DNS+SSL, GitHub push,
     real-phone smoke, foundation-v1 tag on main.
 
+INSPECTIONS — OFFLINE-FIRST ARCHITECTURE
+  The inspection runner (web/src/routes/InspectionRunner.jsx) is
+  the only screen in Delta that uses IndexedDB as the source of truth.
+  The tablet is authoritative while the tech is walking the trailer.
+  Three local stores in `delta-inspections` IndexedDB:
+    - inspection_cache    last-known server snapshot, overlaid with
+                          queued actions for instant render
+    - pending_actions     queued PATCH/POST calls, deduped by
+                          (inspection_id + item_id), with status
+                          ('queued' | 'syncing' | 'needs_attention')
+    - pending_photos      Blob storage for photos awaiting upload
+  The sync engine (web/src/lib/syncEngine.js) drains: uploads photos
+  to /api/uploads, then sends mark_item PATCHes or finalize POSTs
+  with the returned staging_paths. Retries 5xx with backoff; 4xx →
+  needs_attention. Photos that fail 5x get marked failed and their
+  parent actions go to needs_attention.
+  Triggered: on mount, on `navigator.online`, on every store change.
+  Other write paths (chat, report-issue, admin) are STILL online-only.
+  If you touch InspectionRunner: do NOT add direct fetches; route
+  through enqueueAction(). Tests in syncEngine.test.js cover the
+  drain order, dedupe, retry behavior — run them on every change.
+
 OUT OF SCOPE (do not start until PM asks):
   - Monarch tracking integration (needs docs/creds)
   - TrackFleet integration (needs docs/creds)
-  - Offline queue sync worker / retry / conflict resolution
+  - Offline support for chat / report-issue / admin writes (only
+    inspections are offline-first; same pattern applies if extended)
   - Inspection flow beyond logging it as a work_orders.type='inspection'
   - Campaign scheduling UI (campaign tables not yet created)
   - Driver-facing UI (role enum exists, no users yet)
