@@ -4,7 +4,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { Plus, ShieldCheck, Loader2, UserPlus, UserCheck, UserX } from 'lucide-react';
+import { Plus, ShieldCheck, Loader2, UserPlus, UserCheck, UserX, Key, Trash2 } from 'lucide-react';
 import { useAuth } from '../../auth/AuthProvider.jsx';
 import { API_URL } from '../../lib/supabase.js';
 import {
@@ -149,6 +149,124 @@ function AddUserModal({ open, onClose, onCreate, busy }) {
   );
 }
 
+// ── Reset password modal ──────────────────────────────────────────────────
+function ResetPasswordModal({ open, user, onClose, onConfirm, busy }) {
+  const [pw, setPw] = useState('');
+  const [err, setErr] = useState(null);
+
+  useEffect(() => {
+    if (open) {
+      setPw('');
+      setErr(null);
+    }
+  }, [open]);
+
+  function generate() {
+    // Pronounceable-ish temp: short, easy to read over the phone.
+    const wordlist = ['blue', 'fast', 'oak', 'sky', 'rock', 'mint', 'red', 'pine', 'bolt', 'frost'];
+    const word = wordlist[Math.floor(Math.random() * wordlist.length)];
+    const num = Math.floor(1000 + Math.random() * 9000);
+    setPw(`${word}-${word}-${num}`);
+  }
+
+  async function submit() {
+    setErr(null);
+    if (pw.length < 8) return setErr('Password must be at least 8 characters.');
+    try {
+      await onConfirm(user.id, pw);
+    } catch (e) {
+      setErr(e.message);
+    }
+  }
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={`Reset password for ${user?.full_name || user?.email || ''}`}
+      description="They will sign in with this new password. Share it with them privately — Delta will not show it again."
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button onClick={submit} loading={busy} disabled={busy || pw.length < 8}>
+            <Key size={16} /> Set new password
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <div className="rounded-lg border border-border bg-muted/40 px-4 py-3 text-sm">
+          <span className="font-mono text-xs text-muted-foreground">EMAIL</span>{' '}
+          {user?.email}
+        </div>
+        <Input
+          label="New password"
+          type="text"
+          value={pw}
+          onChange={(e) => setPw(e.target.value)}
+          placeholder="min. 8 characters"
+          autoFocus
+        />
+        <div className="flex justify-between items-center">
+          <Button variant="ghost" size="sm" onClick={generate} disabled={busy}>
+            Generate one
+          </Button>
+          <p className="text-[11px] text-muted-foreground">
+            They can change it after they sign in.
+          </p>
+        </div>
+        {err && (
+          <Banner tone="danger" title="Couldn't reset">
+            {err}
+          </Banner>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+// ── Delete confirm modal ──────────────────────────────────────────────────
+function DeleteUserModal({ open, user, onClose, onConfirm, busy }) {
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      destructive
+      title={`Delete ${user?.full_name || user?.email || 'user'}?`}
+      description={
+        user?.role
+          ? 'Removes them permanently. Any WOs or issues they logged stay, but the user row is gone. Deactivate is usually safer.'
+          : 'This is an orphan account (no profile data). Safe to remove.'
+      }
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="danger" onClick={() => onConfirm(user.id)} loading={busy}>
+            <Trash2 size={16} /> Delete permanently
+          </Button>
+        </>
+      }
+    >
+      <div className="rounded-lg border border-border bg-muted/40 px-4 py-3 text-sm space-y-1">
+        <p>
+          <span className="font-mono text-xs text-muted-foreground">EMAIL</span>{' '}
+          {user?.email}
+        </p>
+        {user?.role && (
+          <p>
+            <span className="font-mono text-xs text-muted-foreground">ROLE</span>{' '}
+            <Badge tone={ROLE_TONE[user?.role] || 'neutral'}>{user?.role}</Badge>
+          </p>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
 // ── Deactivate confirm modal ──────────────────────────────────────────────
 function DeactivateModal({ open, user, onClose, onConfirm, busy }) {
   return (
@@ -184,10 +302,22 @@ function DeactivateModal({ open, user, onClose, onConfirm, busy }) {
 }
 
 // ── Per-row card ─────────────────────────────────────────────────────────
-function UserRow({ u, isSelf, onChangeRole, onToggleActive, onDeactivate, busy }) {
+function UserRow({
+  u,
+  isSelf,
+  onChangeRole,
+  onToggleActive,
+  onDeactivate,
+  onResetPassword,
+  onDelete,
+  busy,
+}) {
+  // An "orphan" is an auth.users entry without a profile row — shows up
+  // as "(no name)" with no role. Right action is delete, not deactivate.
+  const isOrphan = !u.role;
   return (
     <Card className={cn('p-5', !u.active && 'opacity-60')}>
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
         <div className="flex-1 min-w-0">
           <div className="flex items-baseline gap-2 flex-wrap">
             <h3 className="font-display text-lg tracking-tight truncate">
@@ -196,6 +326,7 @@ function UserRow({ u, isSelf, onChangeRole, onToggleActive, onDeactivate, busy }
             <Badge tone={ROLE_TONE[u.role] || 'neutral'}>{u.role || '?'}</Badge>
             {!u.active && <Badge tone="danger">inactive</Badge>}
             {isSelf && <Badge tone="accent">you</Badge>}
+            {isOrphan && <Badge tone="warning">orphan</Badge>}
           </div>
           <p className="mt-1 text-xs text-muted-foreground font-mono truncate">{u.email}</p>
           <p className="mt-1 text-[11px] text-muted-foreground">
@@ -209,37 +340,57 @@ function UserRow({ u, isSelf, onChangeRole, onToggleActive, onDeactivate, busy }
           </p>
         </div>
         {!isSelf && (
-          <div className="flex items-center gap-2 shrink-0">
-            <Select
-              value={u.role || 'tech'}
-              onChange={(e) => onChangeRole(u.id, e.target.value)}
-              className="h-9 text-xs"
+          <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+            {!isOrphan && (
+              <>
+                <Select
+                  value={u.role || 'tech'}
+                  onChange={(e) => onChangeRole(u.id, e.target.value)}
+                  className="h-9 text-xs"
+                  disabled={busy}
+                >
+                  <option value="tech">Tech</option>
+                  <option value="dispatcher">Dispatcher</option>
+                  <option value="admin">Admin</option>
+                  <option value="driver">Driver</option>
+                </Select>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => onResetPassword(u)}
+                  disabled={busy}
+                >
+                  <Key size={14} /> Reset password
+                </Button>
+                {u.active ? (
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    onClick={() => onDeactivate(u)}
+                    disabled={busy}
+                  >
+                    <UserX size={14} /> Deactivate
+                  </Button>
+                ) : (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => onToggleActive(u.id, true)}
+                    disabled={busy}
+                  >
+                    <UserCheck size={14} /> Reactivate
+                  </Button>
+                )}
+              </>
+            )}
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={() => onDelete(u)}
               disabled={busy}
             >
-              <option value="tech">Tech</option>
-              <option value="dispatcher">Dispatcher</option>
-              <option value="admin">Admin</option>
-              <option value="driver">Driver</option>
-            </Select>
-            {u.active ? (
-              <Button
-                variant="danger"
-                size="sm"
-                onClick={() => onDeactivate(u)}
-                disabled={busy}
-              >
-                <UserX size={14} /> Deactivate
-              </Button>
-            ) : (
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => onToggleActive(u.id, true)}
-                disabled={busy}
-              >
-                <UserCheck size={14} /> Reactivate
-              </Button>
-            )}
+              <Trash2 size={14} /> Delete
+            </Button>
           </div>
         )}
       </div>
@@ -257,6 +408,8 @@ export default function Users() {
   const [busy, setBusy] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [deactivating, setDeactivating] = useState(null);
+  const [resettingPw, setResettingPw] = useState(null);
+  const [deleting, setDeleting] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -335,6 +488,49 @@ export default function Users() {
   async function onDeactivate(id) {
     await patchUser(id, { active: false }, 'Deactivated');
     setDeactivating(null);
+  }
+
+  async function onResetPassword(id, new_password) {
+    setBusy(true);
+    try {
+      const r = await fetch(`${API_URL}/api/admin/users/${id}/reset-password`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ new_password }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      pushToast({
+        tone: 'success',
+        title: 'Password reset',
+        text: 'Share the new password with them privately.',
+      });
+      setResettingPw(null);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onDelete(id) {
+    setBusy(true);
+    try {
+      const r = await fetch(`${API_URL}/api/admin/users/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      pushToast({ tone: 'warning', title: 'User deleted' });
+      setDeleting(null);
+      await load();
+    } catch (e) {
+      pushToast({ tone: 'danger', title: 'Delete failed', text: e.message });
+    } finally {
+      setBusy(false);
+    }
   }
 
   const counts = (users || []).reduce(
@@ -437,6 +633,8 @@ export default function Users() {
                 onChangeRole={onChangeRole}
                 onToggleActive={onToggleActive}
                 onDeactivate={(user) => setDeactivating(user)}
+                onResetPassword={(user) => setResettingPw(user)}
+                onDelete={(user) => setDeleting(user)}
               />
             ))}
           </div>
@@ -454,6 +652,20 @@ export default function Users() {
         user={deactivating}
         onClose={() => setDeactivating(null)}
         onConfirm={onDeactivate}
+        busy={busy}
+      />
+      <ResetPasswordModal
+        open={Boolean(resettingPw)}
+        user={resettingPw}
+        onClose={() => setResettingPw(null)}
+        onConfirm={onResetPassword}
+        busy={busy}
+      />
+      <DeleteUserModal
+        open={Boolean(deleting)}
+        user={deleting}
+        onClose={() => setDeleting(null)}
+        onConfirm={onDelete}
         busy={busy}
       />
     </div>

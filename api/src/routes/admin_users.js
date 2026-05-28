@@ -1,8 +1,10 @@
 // /api/admin/users/* — admin user management endpoints.
 //
-//   GET    /api/admin/users           list users (auth email + profile role)
-//   POST   /api/admin/users           create user via Supabase Auth Admin API
-//   PATCH  /api/admin/users/:id       update role or active flag
+//   GET    /api/admin/users                       list users (auth + profile)
+//   POST   /api/admin/users                       create user (auth + profile)
+//   PATCH  /api/admin/users/:id                   update role / active / name / phone
+//   POST   /api/admin/users/:id/reset-password    set a new password on auth.users
+//   DELETE /api/admin/users/:id                   hard-delete (auth + profile)
 //
 // Admin-only via requireAuth + requireAdmin.
 
@@ -181,4 +183,96 @@ adminUsersRouter.patch('/api/admin/users/:id', async (req, res) => {
   });
 
   res.json({ user: after });
+});
+
+// ---- POST /api/admin/users/:id/reset-password ------------------------------
+// Set a new password on auth.users. Body: { new_password: string }. Admin
+// hands the new password to the user out-of-band (SMS, paper, etc.).
+// Audit log records the action — but never the password itself.
+adminUsersRouter.post('/api/admin/users/:id/reset-password', async (req, res) => {
+  const { id } = req.params;
+  const { new_password } = req.body || {};
+  if (typeof new_password !== 'string' || new_password.length < 8) {
+    return res.status(400).json({ error: 'password_min_8' });
+  }
+  if (id === req.user.id) {
+    return res.status(400).json({
+      error: 'cannot_reset_own_password',
+      message: 'Use the regular password-reset flow for your own account.',
+    });
+  }
+  const admin = getSupabaseAdmin();
+  const { error } = await admin.auth.admin.updateUserById(id, { password: new_password });
+  if (error) {
+    logger.warn({ err: error.message, id }, 'admin: reset_password failed');
+    return res.status(400).json({ error: error.message });
+  }
+  await admin.from('audit_log').insert({
+    actor_user_id: req.user.id,
+    action: 'user_password_reset',
+    target_table: 'users',
+    target_id: id,
+    // Never persist the password.
+    after: { reset_at: new Date().toISOString() },
+  });
+  res.json({ ok: true });
+});
+
+// ---- DELETE /api/admin/users/:id -------------------------------------------
+// Hard-delete both auth.users AND public.users. Use when removing a person
+// permanently OR cleaning up orphans (auth.users rows without a public
+// profile). Refuses to delete the caller.
+adminUsersRouter.delete('/api/admin/users/:id', async (req, res) => {
+  const { id } = req.params;
+  if (id === req.user.id) {
+    return res.status(400).json({ error: 'cannot_delete_self' });
+  }
+  const admin = getSupabaseAdmin();
+
+  // Snapshot what we're deleting for the audit log.
+  const [{ data: profile }, { data: authData }] = await Promise.all([
+    admin.from('users').select('id, full_name, role, active').eq('id', id).maybeSingle(),
+    admin.auth.admin.getUserById(id),
+  ]);
+  const before = {
+    profile,
+    auth: authData?.user
+      ? {
+          email: authData.user.email,
+          created_at: authData.user.created_at,
+          last_sign_in_at: authData.user.last_sign_in_at,
+        }
+      : null,
+  };
+
+  // Delete the auth.users row — cascade in the DB removes public.users
+  // (ON DELETE CASCADE on the FK). If the profile didn't exist, no-op.
+  const { error: delErr } = await admin.auth.admin.deleteUser(id);
+  if (delErr) {
+    // If the auth user doesn't exist, still try to clean up an orphan
+    // public.users row (rare, but possible if something failed mid-create).
+    if (/not found/i.test(delErr.message)) {
+      if (profile) await admin.from('users').delete().eq('id', id);
+      await admin.from('audit_log').insert({
+        actor_user_id: req.user.id,
+        action: 'user_delete_orphan_profile',
+        target_table: 'users',
+        target_id: id,
+        before,
+      });
+      return res.json({ ok: true, note: 'auth_user_not_found_profile_cleaned' });
+    }
+    logger.warn({ err: delErr.message, id }, 'admin: delete user failed');
+    return res.status(400).json({ error: delErr.message });
+  }
+
+  await admin.from('audit_log').insert({
+    actor_user_id: req.user.id,
+    action: 'user_delete',
+    target_table: 'users',
+    target_id: id,
+    before,
+  });
+
+  res.json({ ok: true });
 });
