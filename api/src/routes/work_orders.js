@@ -486,6 +486,28 @@ workOrdersRouter.patch(
         });
       }
 
+      // ---- Side-effect cascade for "skipped" transitions ----
+      // Same rule as close-WO-with-pending: a skipped item with an
+      // upstream issue releases the issue back to 'open' so another
+      // tech can pick it up on a future WO. Only flip issues currently
+      // 'in_progress' — don't stomp on admin-driven status changes.
+      let revertedIssueId = null;
+      if (
+        status === 'skipped' &&
+        before.status !== 'skipped' &&
+        before.source === 'issue' &&
+        before.source_issue_id
+      ) {
+        const { data: reverted } = await admin
+          .from('issues')
+          .update({ status: 'open' })
+          .eq('id', before.source_issue_id)
+          .eq('status', 'in_progress')
+          .select('id')
+          .maybeSingle();
+        if (reverted) revertedIssueId = reverted.id;
+      }
+
       // ---- Photos: attach any new staged photos to this WO ----
       const attachedPhotos = [];
       if (Array.isArray(attachments) && attachments.length > 0) {
@@ -508,7 +530,7 @@ workOrdersRouter.patch(
         }
       }
 
-      res.json({ item: after, attachedPhotos });
+      res.json({ item: after, attachedPhotos, reverted_issue_id: revertedIssueId });
     } catch (e) {
       logger.error({ err: e.message }, 'patch WO item: unhandled');
       res.status(500).json({ error: 'patch_failed' });

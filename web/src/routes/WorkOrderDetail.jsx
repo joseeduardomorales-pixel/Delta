@@ -595,6 +595,15 @@ export default function WorkOrderDetail() {
       );
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      // Tell the tech when a skip released a linked issue back to the
+      // open queue — otherwise it silently disappears.
+      if (body.status === 'skipped' && data.reverted_issue_id) {
+        pushToast({
+          tone: 'info',
+          title: 'Issue released',
+          text: 'Returned to Open issues so another WO can pick it up.',
+        });
+      }
       await load();
     } catch (e) {
       pushToast({ tone: 'danger', title: 'Save failed', text: e.message });
