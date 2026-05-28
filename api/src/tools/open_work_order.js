@@ -82,6 +82,7 @@ export const openWorkOrder = {
             ? {
                 value: last_known.value,
                 recorded_at: last_known.recorded_at,
+                recorded_human: last_known.recorded_human,
                 source: last_known.source,
               }
             : null,

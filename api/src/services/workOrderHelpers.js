@@ -12,6 +12,30 @@
 
 const FRESH_MS = 24 * 60 * 60 * 1000;
 
+// Pre-formatted relative-time string so Claude doesn't have to do date
+// math on ISO timestamps (it hallucinates badly on dates beyond its
+// training cutoff). Always pass this in tool responses; the prompt
+// tells Claude to echo it verbatim.
+export function relativeRecency(iso) {
+  if (!iso) return null;
+  const ms = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(ms)) return null;
+  const m = Math.round(ms / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m} minute${m === 1 ? '' : 's'} ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h} hour${h === 1 ? '' : 's'} ago`;
+  const d = Math.round(h / 24);
+  if (d === 1) return 'yesterday';
+  if (d < 14) return `${d} days ago`;
+  const w = Math.round(d / 7);
+  if (w < 8) return `${w} weeks ago`;
+  const mo = Math.round(d / 30);
+  if (mo < 12) return `${mo} month${mo === 1 ? '' : 's'} ago`;
+  const y = Math.round(d / 365);
+  return `${y} year${y === 1 ? '' : 's'} ago`;
+}
+
 export async function resolveAssetWithMeter(admin, unit) {
   if (!unit || typeof unit !== 'string') {
     return { asset: null, meter: null, meter_unit: null, needs_meter: false };
@@ -42,11 +66,21 @@ export async function resolveAssetWithMeter(admin, unit) {
   const fresh =
     latest && Date.now() - new Date(latest.recorded_at).getTime() < FRESH_MS;
 
+  // Attach a pre-computed human recency string so callers (esp. the
+  // chat tools) can hand Claude a verbatim phrase instead of asking
+  // it to compute relative time from a raw ISO timestamp.
+  const lastKnownWithHuman = latest
+    ? { ...latest, recorded_human: relativeRecency(latest.recorded_at) }
+    : null;
+  const meterWithHuman = fresh
+    ? { ...latest, recorded_human: relativeRecency(latest.recorded_at) }
+    : null;
+
   return {
     asset,
     meter_unit: meterUnit,
-    meter: fresh ? latest : null,
-    last_known: latest,
+    meter: meterWithHuman,
+    last_known: lastKnownWithHuman,
     needs_meter: !fresh,
   };
 }

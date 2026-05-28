@@ -154,7 +154,11 @@ export const logCompletedWork = {
           asset_unit_number: asset.unit_number,
           meter_unit,
           last_known: last_known
-            ? { value: last_known.value, recorded_at: last_known.recorded_at }
+            ? {
+                value: last_known.value,
+                recorded_at: last_known.recorded_at,
+                recorded_human: last_known.recorded_human,
+              }
             : null,
           message:
             meter_unit === 'miles'

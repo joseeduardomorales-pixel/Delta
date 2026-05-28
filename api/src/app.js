@@ -17,6 +17,7 @@ import { adminWorkOrdersRouter } from './routes/admin_work_orders.js';
 import { adminUsersRouter } from './routes/admin_users.js';
 import { adminPmSchedulesRouter } from './routes/admin_pm_schedules.js';
 import { adminCampaignsRouter } from './routes/admin_campaigns.js';
+import { adminSyncRouter } from './routes/admin_sync.js';
 import { inspectionsRouter } from './routes/inspections.js';
 
 export function createApp() {
@@ -53,6 +54,7 @@ export function createApp() {
   app.use(adminUsersRouter);
   app.use(adminPmSchedulesRouter);
   app.use(adminCampaignsRouter);
+  app.use(adminSyncRouter);
   app.use(inspectionsRouter);
 
   // 404 — explicit, logged.
