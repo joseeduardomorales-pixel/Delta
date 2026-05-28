@@ -21,6 +21,7 @@ import {
   resolveAssetWithMeter,
   insertManualMeter,
 } from '../services/workOrderHelpers.js';
+import { formatInspection } from '../lib/numbers.js';
 
 export const startInspection = {
   name: 'start_inspection',
@@ -205,7 +206,7 @@ export const startInspection = {
         template_id: template.id,
         started_by: user.id,
       })
-      .select('id')
+      .select('id, display_seq')
       .single();
     if (inspErr) throw new Error(inspErr.message);
 
@@ -227,16 +228,27 @@ export const startInspection = {
       }
     }
 
+    const { data: profile } = await admin
+      .from('users')
+      .select('handle')
+      .eq('id', user.id)
+      .maybeSingle();
+    const label =
+      formatInspection(profile?.handle, insp.display_seq) ||
+      `INS-${insp.id.slice(0, 8)}`;
     return {
       work_order: { id: woId, asset_unit_number: asset.unit_number },
       inspection: {
         id: insp.id,
+        label,
+        display_seq: insp.display_seq,
+        user_handle: profile?.handle ?? null,
         template_name: template.name,
         item_count: rows.length,
         url: `/work-orders/${woId}/inspect/${insp.id}`,
       },
       confirmation:
-        `Started ${template.name} on ${asset.unit_number} (${rows.length} items). ` +
+        `Started ${template.name} on ${asset.unit_number} (${label}, ${rows.length} items). ` +
         `Open the inspection screen to walk through it.`,
     };
   },

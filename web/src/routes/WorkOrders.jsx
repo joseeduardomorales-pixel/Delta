@@ -25,6 +25,7 @@ import {
   Banner,
 } from '../components/ui/index.js';
 import { cn } from '../lib/cn.js';
+import { woLabel } from '../lib/numbers.js';
 
 const easeOut = [0.16, 1, 0.3, 1];
 
@@ -81,7 +82,7 @@ function WoRow({ wo }) {
           </span>
         </div>
         <div className="flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">
-          <span className="font-mono">WO-{wo.id.slice(0, 8)}</span>
+          <span className="font-mono">{woLabel(wo)}</span>
           <span>·</span>
           <span>{wo.user?.full_name || '?'}</span>
           {meter && (

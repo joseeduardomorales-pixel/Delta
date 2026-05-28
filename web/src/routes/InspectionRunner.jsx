@@ -34,6 +34,7 @@ import {
   useToast,
 } from '../components/ui/index.js';
 import { cn } from '../lib/cn.js';
+import { woLabel, inspectionLabel } from '../lib/numbers.js';
 
 const easeOut = [0.16, 1, 0.3, 1];
 
@@ -406,7 +407,13 @@ export default function InspectionRunner() {
             <p className="mt-1 text-sm text-muted-foreground">
               <span className="font-mono">{data.inspection.work_order.asset_unit_number}</span>
               <span className="mx-2">·</span>
-              <span className="font-mono">WO-{woId.slice(0, 8)}</span>
+              <span className="font-mono">
+                {woLabel(data.inspection.work_order, {
+                  handle: data.inspection.work_order.user?.handle,
+                })}
+              </span>
+              <span className="mx-2">·</span>
+              <span className="font-mono">{inspectionLabel(data.inspection)}</span>
             </p>
           )}
         </motion.div>

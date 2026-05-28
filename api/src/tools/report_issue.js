@@ -12,6 +12,8 @@
 // If the user is describing work they JUST DID (oil change, repair),
 // use log_completed_work or open_work_order instead.
 
+import { formatIssue } from '../lib/numbers.js';
+
 export const reportIssue = {
   name: 'report_issue',
   description:
@@ -64,21 +66,28 @@ export const reportIssue = {
         raw_input: input.raw_input,
         status: 'open',
       })
-      .select('id, asset_unit_number, title, status, reported_at')
+      .select('id, asset_unit_number, title, status, reported_at, display_seq')
       .single();
     if (error) throw new Error(error.message);
 
-    const short = data.id.slice(0, 8);
+    const { data: profile } = await admin
+      .from('users')
+      .select('handle')
+      .eq('id', user.id)
+      .maybeSingle();
+    const label = formatIssue(profile?.handle, data.display_seq) || `ISS-${data.id.slice(0, 8)}`;
     return {
       issue: {
         id: data.id,
-        short_id: short,
+        label,
+        display_seq: data.display_seq,
+        user_handle: profile?.handle ?? null,
         asset_unit_number: data.asset_unit_number,
         title: data.title,
         status: data.status,
       },
       confirmation:
-        `Issue logged: ISS-${short} — "${data.title}" on ${data.asset_unit_number}. ` +
+        `Issue logged: ${label} — "${data.title}" on ${data.asset_unit_number}. ` +
         `A tech will pick this up when they open a work order on this asset.`,
     };
   },

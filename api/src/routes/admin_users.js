@@ -45,7 +45,7 @@ adminUsersRouter.get('/api/admin/users', async (req, res) => {
 
   const { data: profiles, error: pErr } = await admin
     .from('users')
-    .select('id, full_name, role, phone, active, created_at, updated_at');
+    .select('id, full_name, role, phone, active, handle, created_at, updated_at');
   if (pErr) {
     return res.status(500).json({ error: 'profiles: ' + pErr.message });
   }
@@ -67,6 +67,7 @@ adminUsersRouter.get('/api/admin/users', async (req, res) => {
         role: p?.role ?? null,
         phone: p?.phone ?? null,
         active: p?.active ?? true,
+        handle: p?.handle ?? null,
       };
     })
     .sort((a, b) => (a.full_name || a.email).localeCompare(b.full_name || b.email));

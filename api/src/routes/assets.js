@@ -68,10 +68,11 @@ assetsRouter.get(
         .select(
           `id, asset_unit_number, status, summary, started_at, completed_at,
            approval_status, approved_at, approval_notes, voided_at, void_reason,
+           display_seq,
            opening_meter:meter_readings!work_orders_opening_meter_reading_id_fkey
              ( value, unit, source, recorded_at ),
            action_photos ( id, storage_path, caption, uploaded_at ),
-           user:users!work_orders_user_id_fkey ( id, full_name, role ),
+           user:users!work_orders_user_id_fkey ( id, full_name, role, handle ),
            items:work_order_items (
              id, sequence, source, source_issue_id, source_pm_schedule_id,
              source_campaign_assignment_id, type, title, description, raw_input,
@@ -86,9 +87,9 @@ assetsRouter.get(
         .from('issues')
         .select(
           `id, asset_unit_number, title, description, raw_input, status,
-           reported_at, resolved_at, dismissed_at, dismiss_reason,
+           reported_at, resolved_at, dismissed_at, dismiss_reason, display_seq,
            resolved_by_work_order_item_id,
-           reporter:users!issues_reported_by_fkey ( id, full_name, role )`,
+           reporter:users!issues_reported_by_fkey ( id, full_name, role, handle )`,
         )
         .ilike('asset_unit_number', unit)
         .order('reported_at', { ascending: false })
@@ -98,9 +99,9 @@ assetsRouter.get(
             .from('work_order_inspections')
             .select(
               `id, work_order_id, template_id, started_at, completed_at,
-               technician_signed_at, supervisor_signed_at, notes,
+               technician_signed_at, supervisor_signed_at, notes, display_seq,
                template:inspection_templates ( id, name, scope ),
-               started_by_user:users!work_order_inspections_started_by_fkey ( id, full_name )`,
+               started_by_user:users!work_order_inspections_started_by_fkey ( id, full_name, handle )`,
             )
             .in(
               'work_order_id',

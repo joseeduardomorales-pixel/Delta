@@ -16,6 +16,7 @@ import {
   resolveAssetWithMeter,
   insertManualMeter,
 } from '../services/workOrderHelpers.js';
+import { formatWo } from '../lib/numbers.js';
 
 export const openWorkOrder = {
   name: 'open_work_order',
@@ -118,12 +119,18 @@ export const openWorkOrder = {
         opening_meter_reading_id: openingMeterRow?.id ?? null,
       })
       .select(
-        'id, asset_unit_number, status, started_at, opening_meter_reading_id',
+        'id, asset_unit_number, status, started_at, opening_meter_reading_id, display_seq',
       )
       .single();
     if (error) throw new Error(error.message);
 
-    const shortId = wo.id.slice(0, 8);
+    // Pull caller's handle for the human-readable label.
+    const { data: profile } = await admin
+      .from('users')
+      .select('handle')
+      .eq('id', user.id)
+      .maybeSingle();
+    const label = formatWo(profile?.handle, wo.display_seq) || `WO-${wo.id.slice(0, 8)}`;
     const meterText = openingMeterRow
       ? meter_unit === 'miles'
         ? `${openingMeterRow.value.toLocaleString()} mi`
@@ -132,7 +139,9 @@ export const openWorkOrder = {
     return {
       work_order: {
         id: wo.id,
-        short_id: shortId,
+        label,
+        display_seq: wo.display_seq,
+        user_handle: profile?.handle ?? null,
         asset_unit_number: wo.asset_unit_number,
         status: wo.status,
         opening_meter: openingMeterRow
@@ -145,7 +154,7 @@ export const openWorkOrder = {
           : null,
       },
       confirmation:
-        `Opened WO-${shortId} on ${wo.asset_unit_number} (${meterText}). ` +
+        `Opened ${label} on ${wo.asset_unit_number} (${meterText}). ` +
         `What are you working on? I can list pending issues, due PMs, and ` +
         `active campaigns for this asset.`,
     };

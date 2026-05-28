@@ -31,11 +31,11 @@ adminWorkOrdersRouter.get('/api/admin/work-orders/pending', async (req, res) => 
     .from('work_orders')
     .select(
       `id, asset_id, asset_unit_number, status, summary,
-       started_at, completed_at, approval_status, approval_notes,
+       started_at, completed_at, approval_status, approval_notes, display_seq,
        opening_meter:meter_readings!work_orders_opening_meter_reading_id_fkey
          ( value, unit, source, recorded_at ),
        action_photos ( id, storage_path, caption, uploaded_at ),
-       user:users!work_orders_user_id_fkey ( id, full_name, role ),
+       user:users!work_orders_user_id_fkey ( id, full_name, role, handle ),
        items:work_order_items (
          id, sequence, source, source_issue_id, source_pm_schedule_id,
          source_campaign_assignment_id, type, title, description, raw_input,

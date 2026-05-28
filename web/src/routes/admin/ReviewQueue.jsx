@@ -37,6 +37,7 @@ import {
   Modal,
   useToast,
 } from '../../components/ui/index.js';
+import { woLabel } from '../../lib/numbers.js';
 
 const easeOut = [0.16, 1, 0.3, 1];
 
@@ -95,7 +96,7 @@ function PendingWO({ wo, onApprove, onReject, onSave, busy }) {
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <Badge tone="warning">pending review</Badge>
           <span className="text-xs text-muted-foreground">
-            <span className="font-mono">WO-{wo.id.slice(0, 8)}</span>
+            <span className="font-mono">{woLabel(wo)}</span>
             <span className="mx-1.5">·</span>
             {wo.user?.full_name || '?'}
             <span className="mx-1.5 text-muted-foreground/60">({wo.user?.role})</span>

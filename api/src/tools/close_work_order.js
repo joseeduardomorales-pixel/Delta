@@ -3,6 +3,8 @@
 // here because the tech might want to close a WO and leave a "pending"
 // item for next visit; the admin reviewer can flag that.
 
+import { formatWo } from '../lib/numbers.js';
+
 export const closeWorkOrder = {
   name: 'close_work_order',
   description:
@@ -21,7 +23,7 @@ export const closeWorkOrder = {
     const { admin } = ctx;
     const { data: wo } = await admin
       .from('work_orders')
-      .select('id, status, asset_unit_number')
+      .select('id, status, asset_unit_number, display_seq, user:users!work_orders_user_id_fkey(handle)')
       .eq('id', input.work_order_id)
       .maybeSingle();
     if (!wo) return { ok: false, error: 'work_order_not_found' };
@@ -54,16 +56,19 @@ export const closeWorkOrder = {
       {},
     );
 
+    const label = formatWo(wo.user?.handle, wo.display_seq) || `WO-${data.id.slice(0, 8)}`;
     return {
       work_order: {
         id: data.id,
-        short_id: data.id.slice(0, 8),
+        label,
+        display_seq: wo.display_seq,
+        user_handle: wo.user?.handle ?? null,
         status: data.status,
         completed_at: data.completed_at,
       },
       counts,
       confirmation:
-        `Closed WO-${data.id.slice(0, 8)} on ${wo.asset_unit_number}. ` +
+        `Closed ${label} on ${wo.asset_unit_number}. ` +
         `${counts.done || 0} done, ${counts.skipped || 0} skipped, ` +
         `${counts.pending || 0} pending. Pending review by admin.`,
     };

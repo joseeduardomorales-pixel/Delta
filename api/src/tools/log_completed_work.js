@@ -23,6 +23,7 @@ import {
   resolveAssetWithMeter,
   insertManualMeter,
 } from '../services/workOrderHelpers.js';
+import { formatWo } from '../lib/numbers.js';
 
 export const logCompletedWork = {
   name: 'log_completed_work',
@@ -120,7 +121,7 @@ export const logCompletedWork = {
         approval_status: 'pending_review',
         opening_meter_reading_id: openingMeter?.id ?? null,
       })
-      .select('id, asset_unit_number, opening_meter_reading_id')
+      .select('id, asset_unit_number, opening_meter_reading_id, display_seq')
       .single();
     if (woErr) throw new Error(woErr.message);
 
@@ -154,7 +155,12 @@ export const logCompletedWork = {
       .eq('id', wo.id);
     if (closeErr) throw new Error(closeErr.message);
 
-    const shortId = wo.id.slice(0, 8);
+    const { data: profile } = await admin
+      .from('users')
+      .select('handle')
+      .eq('id', user.id)
+      .maybeSingle();
+    const label = formatWo(profile?.handle, wo.display_seq) || `WO-${wo.id.slice(0, 8)}`;
     const meterText = openingMeter
       ? meter_unit === 'miles'
         ? ` @ ${openingMeter.value.toLocaleString()} mi`
@@ -163,13 +169,15 @@ export const logCompletedWork = {
     return {
       work_order: {
         id: wo.id,
-        short_id: shortId,
+        label,
+        display_seq: wo.display_seq,
+        user_handle: profile?.handle ?? null,
         asset_unit_number: wo.asset_unit_number,
         status: 'completed',
       },
       item,
       confirmation:
-        `Logged WO-${shortId} — ${input.title} on ${wo.asset_unit_number}${meterText} ` +
+        `Logged ${label} — ${input.title} on ${wo.asset_unit_number}${meterText} ` +
         `(${input.type}, completed, pending review). Say "undo" within 5 min to remove.`,
     };
   },

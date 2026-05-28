@@ -216,9 +216,11 @@ inspectionsRouter.get('/api/inspections/:id', requireAuth, async (req, res) => {
     .from('work_order_inspections')
     .select(
       `id, work_order_id, template_id, started_at, completed_at,
-       technician_signed_at, supervisor_signed_at, notes,
+       technician_signed_at, supervisor_signed_at, notes, display_seq,
        template:inspection_templates ( id, name, description, scope ),
-       work_order:work_orders ( id, asset_unit_number, status, started_at, user_id )`,
+       work_order:work_orders ( id, asset_unit_number, status, started_at, user_id, display_seq,
+         user:users!work_orders_user_id_fkey ( handle ) ),
+       started_by_user:users!work_order_inspections_started_by_fkey ( id, full_name, handle )`,
     )
     .eq('id', req.params.id)
     .maybeSingle();

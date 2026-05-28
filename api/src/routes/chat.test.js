@@ -95,8 +95,9 @@ describe('POST /api/chat (tool-use end-to-end)', () => {
       expect(res.body.conversationId).toMatch(/^[0-9a-f-]{36}$/);
       expect(res.body.assistantText).toBeTypeOf('string');
       expect(res.body.assistantText.length).toBeGreaterThan(0);
-      // Should mention WO-xxxxxxxx in the reply (the confirmation echo)
-      expect(res.body.assistantText).toMatch(/WO-[0-9a-f]{8}/i);
+      // Should mention WO-<handle>-<seq> in the reply (the confirmation echo
+      // — schema 0007 replaced the hex short-id with WO-1001-0042 style).
+      expect(res.body.assistantText).toMatch(/WO-\d{4}-\d{4}/);
       expect(res.body.createdWorkOrders.length).toBeGreaterThanOrEqual(1);
 
       const wo = res.body.createdWorkOrders[0];

@@ -13,5 +13,6 @@ meRouter.get('/me', requireAuth, (req, res) => {
     email: req.user.email,
     fullName: req.user.fullName,
     role: req.user.role,
+    handle: req.user.handle,
   });
 });

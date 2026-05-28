@@ -7,6 +7,7 @@ import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { getSupabaseAdmin } from '../services/supabaseAdmin.js';
 import { attachStagingToWorkOrder } from '../services/storage.js';
+import { formatIssue } from '../lib/numbers.js';
 import { logger } from '../logger.js';
 
 export const issuesRouter = Router();
@@ -50,7 +51,7 @@ issuesRouter.post('/api/issues', requireAuth, async (req, res) => {
         parsed_data: parsed_data || {},
         status: 'open',
       })
-      .select('id, asset_unit_number, title, status, reported_at')
+      .select('id, asset_unit_number, title, status, reported_at, display_seq')
       .single();
 
     if (error) {
@@ -85,11 +86,22 @@ issuesRouter.post('/api/issues', requireAuth, async (req, res) => {
       }
     }
 
-    const short_id = data.id.slice(0, 8);
+    // Look up reporter handle for the human-readable label.
+    const { data: profile } = await admin
+      .from('users')
+      .select('handle')
+      .eq('id', req.user.id)
+      .maybeSingle();
+    const label = formatIssue(profile?.handle, data.display_seq) || `ISS-${data.id.slice(0, 8)}`;
     res.status(201).json({
-      issue: { ...data, short_id },
+      issue: {
+        ...data,
+        label,
+        user_handle: profile?.handle ?? null,
+        short_id: data.id.slice(0, 8), // legacy fallback
+      },
       attachedPhotos,
-      message: `Issue logged: ISS-${short_id} on ${data.asset_unit_number}.`,
+      message: `Issue logged: ${label} on ${data.asset_unit_number}.`,
     });
   } catch (e) {
     logger.error({ err: e.message, userId: req.user?.id }, 'issues: unhandled');
@@ -106,9 +118,9 @@ issuesRouter.get('/api/issues', requireAuth, async (req, res) => {
     .from('issues')
     .select(
       `id, asset_id, asset_unit_number, title, description, raw_input,
-       parsed_data, status, reported_at, resolved_at,
+       parsed_data, status, reported_at, resolved_at, display_seq,
        resolved_by_work_order_item_id,
-       reporter:users!issues_reported_by_fkey ( id, full_name, role )`,
+       reporter:users!issues_reported_by_fkey ( id, full_name, role, handle )`,
     )
     .order('reported_at', { ascending: false })
     .limit(200);

@@ -23,6 +23,7 @@ import { useAuth } from '../auth/AuthProvider.jsx';
 import { API_URL } from '../lib/supabase.js';
 import { Header, Card, Badge, SectionLabel, Banner } from '../components/ui/index.js';
 import { cn } from '../lib/cn.js';
+import { woLabel, issueLabel, inspectionLabel } from '../lib/numbers.js';
 import ReportIssueButton from '../components/ReportIssueButton.jsx';
 
 const easeOut = [0.16, 1, 0.3, 1];
@@ -83,7 +84,7 @@ function IssueRow({ issue }) {
         </span>
       </div>
       <p className="mt-1 text-[11px] text-muted-foreground">
-        <span className="font-mono">ISS-{issue.id.slice(0, 8)}</span>
+        <span className="font-mono">{issueLabel(issue)}</span>
         <span className="mx-1.5">·</span>
         {issue.reporter?.full_name || '?'}
         <span className="mx-1.5">·</span>
@@ -129,7 +130,7 @@ function WorkOrderRow({ wo }) {
     <Card interactive className="p-4">
       <div className="flex items-baseline justify-between gap-3 mb-1">
         <h3 className="text-base font-semibold text-foreground leading-snug">
-          WO-{wo.id.slice(0, 8)}
+          <span className="font-mono">{woLabel(wo)}</span>
           {wo.summary ? <span className="text-foreground/75"> — {wo.summary}</span> : null}
         </h3>
         <span className="text-xs text-muted-foreground whitespace-nowrap">
@@ -268,7 +269,7 @@ function InspectionRow({ insp }) {
         </Badge>
       </div>
       <p className="mt-1 text-[11px] text-muted-foreground">
-        <span className="font-mono">INS-{insp.id.slice(0, 8)}</span>
+        <span className="font-mono">{inspectionLabel(insp)}</span>
         <span className="mx-1.5">·</span>
         {insp.started_by_user?.full_name || '?'}
         <span className="mx-1.5">·</span>

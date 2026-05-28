@@ -70,7 +70,7 @@ export async function requireAuth(req, res, next) {
     const admin = getSupabaseAdmin();
     const { data, error } = await admin
       .from('users')
-      .select('id, role, full_name, active')
+      .select('id, role, full_name, active, handle')
       .eq('id', supabaseUser.id)
       .maybeSingle();
     if (error) {
@@ -96,6 +96,7 @@ export async function requireAuth(req, res, next) {
     email: supabaseUser.email,
     fullName: profile.full_name,
     role: profile.role,
+    handle: profile.handle,
     jwt,
   };
   next();

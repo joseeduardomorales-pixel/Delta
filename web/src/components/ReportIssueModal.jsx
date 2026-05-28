@@ -132,7 +132,7 @@ export default function ReportIssueModal({
       pushToast({
         tone: 'success',
         title: 'Issue logged',
-        text: `ISS-${data.issue.short_id} on ${data.issue.asset_unit_number}`,
+        text: `${data.issue.label || `ISS-${data.issue.short_id}`} on ${data.issue.asset_unit_number}`,
       });
       onSubmitted?.(data.issue);
       onClose?.();

@@ -324,6 +324,7 @@ function UserRow({
               {u.full_name || <span className="text-muted-foreground italic">(no name)</span>}
             </h3>
             <Badge tone={ROLE_TONE[u.role] || 'neutral'}>{u.role || '?'}</Badge>
+            {u.handle && <Badge tone="neutral">#{u.handle}</Badge>}
             {!u.active && <Badge tone="danger">inactive</Badge>}
             {isSelf && <Badge tone="accent">you</Badge>}
             {isOrphan && <Badge tone="warning">orphan</Badge>}

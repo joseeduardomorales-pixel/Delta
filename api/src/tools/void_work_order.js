@@ -7,6 +7,8 @@
 // The 5-min grace is enforced both here (for a friendly error) and by
 // the DB grace policy.
 
+import { formatWo } from '../lib/numbers.js';
+
 const GRACE_MS = 5 * 60 * 1000;
 
 export const voidWorkOrder = {
@@ -40,7 +42,7 @@ export const voidWorkOrder = {
     if (input.work_order_short_id) {
       const { data: recent } = await admin
         .from('work_orders')
-        .select('id, asset_unit_number, status')
+        .select('id, asset_unit_number, status, display_seq')
         .eq('user_id', user.id)
         .gt('started_at', graceFloor)
         .order('started_at', { ascending: false })
@@ -51,7 +53,7 @@ export const voidWorkOrder = {
     } else {
       const { data: recent } = await admin
         .from('work_orders')
-        .select('id, asset_unit_number, status')
+        .select('id, asset_unit_number, status, display_seq')
         .eq('user_id', user.id)
         .gt('started_at', graceFloor)
         .neq('status', 'voided')
@@ -88,7 +90,7 @@ export const voidWorkOrder = {
       .eq('id', target.id)
       .eq('user_id', user.id)
       .gt('started_at', graceFloor)
-      .select('id, asset_unit_number')
+      .select('id, asset_unit_number, display_seq')
       .maybeSingle();
     if (error) throw new Error(error.message);
     if (!data) {
@@ -98,13 +100,21 @@ export const voidWorkOrder = {
         message: 'WO aged out of the grace window or was already voided.',
       };
     }
+    const { data: profile } = await admin
+      .from('users')
+      .select('handle')
+      .eq('id', user.id)
+      .maybeSingle();
+    const label = formatWo(profile?.handle, data.display_seq) || `WO-${data.id.slice(0, 8)}`;
     return {
       voided: {
         id: data.id,
-        short_id: data.id.slice(0, 8),
+        label,
+        display_seq: data.display_seq,
+        user_handle: profile?.handle ?? null,
         asset_unit_number: data.asset_unit_number,
       },
-      confirmation: `Voided WO-${data.id.slice(0, 8)} on ${data.asset_unit_number}.`,
+      confirmation: `Voided ${label} on ${data.asset_unit_number}.`,
     };
   },
 };

@@ -160,8 +160,8 @@ workOrdersRouter.get('/api/work-orders', requireAuth, async (req, res) => {
     .from('work_orders')
     .select(
       `id, asset_unit_number, status, summary, started_at, completed_at,
-       approval_status, voided_at,
-       user:users!work_orders_user_id_fkey ( id, full_name, role ),
+       approval_status, voided_at, display_seq,
+       user:users!work_orders_user_id_fkey ( id, full_name, role, handle ),
        opening_meter:meter_readings!work_orders_opening_meter_reading_id_fkey
          ( value, unit ),
        items:work_order_items ( id, status, inspection_result )`,
@@ -207,10 +207,10 @@ workOrdersRouter.get('/api/work-orders/:id', requireAuth, async (req, res) => {
     .select(
       `id, asset_id, asset_unit_number, user_id, status,
        opening_meter_reading_id, summary, started_at, completed_at,
-       voided_at, void_reason, approval_status, approval_notes,
+       voided_at, void_reason, approval_status, approval_notes, display_seq,
        opening_meter:meter_readings!work_orders_opening_meter_reading_id_fkey
          ( value, unit, source, recorded_at ),
-       user:users!work_orders_user_id_fkey ( id, full_name, role ),
+       user:users!work_orders_user_id_fkey ( id, full_name, role, handle ),
        items:work_order_items (
          id, sequence, source, source_issue_id, source_pm_schedule_id,
          source_campaign_assignment_id, type, title, description,
