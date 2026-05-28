@@ -452,17 +452,6 @@ function ItemRow({ item, onMark, onOpenIssue, busy }) {
                 <X size={18} strokeWidth={3} />
                 <span className="ml-1 text-[11px] font-bold">ISSUE</span>
               </BigButton>
-              <BigButton
-                tone="neutral"
-                active={skipped}
-                onClick={() => onMark(item.id, { inspection_result: 'na' })}
-                disabled={busy}
-                aria-label="N/A"
-                title="Not applicable"
-              >
-                <Minus size={18} strokeWidth={3} />
-                <span className="ml-1 text-[11px] font-bold">N/A</span>
-              </BigButton>
             </>
           )}
         </div>
@@ -648,7 +637,7 @@ export default function InspectionRunner() {
       pushToast({
         tone: 'success',
         title: 'Inspection complete',
-        text: `${resp.counts?.pass || 0} OK · ${(resp.counts?.fail || 0) + (resp.counts?.no || 0)} issues · ${resp.counts?.na || 0} N/A`,
+        text: `${resp.counts?.pass || 0} OK · ${(resp.counts?.fail || 0) + (resp.counts?.no || 0)} issues`,
       });
       const unit = data?.inspection?.work_order?.asset_unit_number;
       if (unit) navigate(`/assets/${encodeURIComponent(unit)}`);
@@ -735,7 +724,6 @@ export default function InspectionRunner() {
                   </span>
                   <span className="text-success">{counts.pass} OK</span>
                   <span className="text-danger">{counts.fail} issues</span>
-                  <span className="text-muted-foreground">{counts.na} N/A</span>
                 </div>
                 <span className="text-muted-foreground font-mono">{pct}%</span>
               </div>
