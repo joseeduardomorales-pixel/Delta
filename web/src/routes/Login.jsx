@@ -54,7 +54,11 @@ export default function Login() {
         style={{ background: 'radial-gradient(circle, var(--accent-secondary), transparent 60%)' }}
       />
 
-      <div className="relative mx-auto max-w-6xl px-6 py-12 md:py-20 min-h-screen flex items-center">
+      {/* On portrait phones/tablets the right-side graphic is hidden (lg:block)
+          so vertical-centering pushes the form awkwardly low. Anchor to the
+          top on small screens; only center on lg+ where the two-column
+          layout makes the form column its own vertical centerpiece. */}
+      <div className="relative mx-auto max-w-6xl px-6 pt-10 pb-12 md:pt-16 lg:py-20 lg:min-h-screen lg:flex lg:items-center">
         <div className="grid w-full gap-12 lg:grid-cols-[1.1fr_0.9fr] lg:gap-16 items-center">
           {/* Left — form column */}
           <motion.div

@@ -55,7 +55,10 @@ export async function uploadToStaging({ userId, buffer, mimetype, originalName }
     logger.error({ err: error.message, path }, 'storage: staging upload failed');
     throw new Error(error.message);
   }
-  return { path, mimetype, size: buffer.length };
+  // Field is named `staging_path` to match what every client reads.
+  // (We had a long-standing silent regression: the function used to
+  // return `path` and the clients read `u.staging_path` → undefined.)
+  return { staging_path: path, mimetype, size: buffer.length };
 }
 
 // Move a staging object to its permanent home under a work order.

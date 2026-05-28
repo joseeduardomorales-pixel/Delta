@@ -212,7 +212,7 @@ function IssueModal({ open, item, onClose, onConfirm, busy, accessToken }) {
           rows={4}
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
-          placeholder="e.g. Crack on right corner of display, intermittent flicker, missing bolt on left bracket"
+          placeholder="Crack on right corner of display, intermittent flicker, missing bolt on left bracket"
           autoFocus
           helper={
             notes.trim().length < 3
