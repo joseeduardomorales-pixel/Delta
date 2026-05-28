@@ -383,12 +383,21 @@ export default function InspectionRunner() {
           transition={{ duration: 0.5, ease: easeOut }}
           className="mb-6"
         >
+          {/* "/work-orders/:woId" isn't a route — back-link to the asset
+              kardex (where the WO + its inspection both surface). */}
           <Link
-            to={`/work-orders/${woId}`}
+            to={
+              data?.inspection?.work_order?.asset_unit_number
+                ? `/assets/${encodeURIComponent(data.inspection.work_order.asset_unit_number)}`
+                : '/work-orders'
+            }
             className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
           >
             <ChevronLeft size={14} />
-            <span className="uppercase tracking-widest">Back to work order</span>
+            <span className="uppercase tracking-widest">
+              Back to{' '}
+              {data?.inspection?.work_order?.asset_unit_number || 'work orders'}
+            </span>
           </Link>
           <h1 className="mt-2 font-display text-2xl md:text-3xl tracking-tight">
             {data?.inspection?.template?.name || 'Inspection'}

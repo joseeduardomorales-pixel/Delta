@@ -12,7 +12,9 @@ import { requireAuth, requireAdmin } from '../middleware/auth.js';
 import { getSupabaseAdmin } from '../services/supabaseAdmin.js';
 
 export const adminPmSchedulesRouter = Router();
-adminPmSchedulesRouter.use(requireAuth, requireAdmin);
+// Scope to the actual path prefix — see admin_work_orders.js for the
+// underlying bug (unscoped .use middleware 403s unrelated paths).
+adminPmSchedulesRouter.use('/api/admin/pm-schedules', requireAuth, requireAdmin);
 
 const VALID_SCOPES = new Set(['truck', 'trailer_body', 'reefer_unit', 'other']);
 const VALID_CADENCES = new Set(['miles', 'hours', 'months']);

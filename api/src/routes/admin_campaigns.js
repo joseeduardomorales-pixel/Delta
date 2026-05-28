@@ -14,7 +14,9 @@ import { getSupabaseAdmin } from '../services/supabaseAdmin.js';
 import { logger } from '../logger.js';
 
 export const adminCampaignsRouter = Router();
-adminCampaignsRouter.use(requireAuth, requireAdmin);
+// Scope to the actual path prefix — see admin_work_orders.js for the
+// underlying bug (unscoped .use middleware 403s unrelated paths).
+adminCampaignsRouter.use('/api/admin/campaigns', requireAuth, requireAdmin);
 
 async function resolveMatchingAssets(admin, filter) {
   let q = admin.from('assets').select('id, unit_number, type').eq('active', true);

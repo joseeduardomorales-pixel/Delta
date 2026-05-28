@@ -13,7 +13,12 @@ import { signedReadUrl } from '../services/storage.js';
 import { logger } from '../logger.js';
 
 export const adminWorkOrdersRouter = Router();
-adminWorkOrdersRouter.use(requireAuth, requireAdmin);
+// Scope the admin gate to this router's path prefix. Using
+// router.use(middleware) WITHOUT a path makes it fire for every request
+// that flows through, which silently 403s non-admin endpoints mounted
+// AFTER this router in app.js. The path-prefixed form below limits the
+// middleware to /api/admin/work-orders/* only.
+adminWorkOrdersRouter.use('/api/admin/work-orders', requireAuth, requireAdmin);
 
 const PHOTO_URL_TTL_S = 120;
 
