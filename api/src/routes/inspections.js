@@ -489,13 +489,17 @@ inspectionsRouter.patch(
             .select('asset_id, asset_unit_number')
             .eq('id', insp.work_order_id)
             .maybeSingle();
+          // Issue title = the topic (left side of "— pass condition"), so
+          // "Side panels & housing — no dents or cracks" → "Side panels & housing".
+          // The tech's description carries the actual problem detail.
+          const topic = item.title.split(' — ')[0].trim() || item.title;
           const { data: iss } = await admin
             .from('issues')
             .insert({
               asset_id: wo?.asset_id ?? null,
               asset_unit_number: wo?.asset_unit_number,
               reported_by: req.user.id,
-              title: `[Inspection fail] ${item.title}`,
+              title: topic,
               description: notes?.trim() || null,
               raw_input: `inspection_item:${item.id}`,
               parsed_data: {

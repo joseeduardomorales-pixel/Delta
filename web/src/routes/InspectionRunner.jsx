@@ -543,13 +543,10 @@ export default function InspectionRunner() {
       if (!r.ok) {
         throw new Error(resp.message || resp.error || `HTTP ${r.status}`);
       }
-      if (resp.created_issue) {
-        pushToast({
-          tone: 'warning',
-          title: 'Issue created',
-          text: `${resp.created_issue.title} — logged on this asset.`,
-        });
-      }
+      // No per-issue toast — the progress bar count and the
+      // "N issues logged on this asset" badge in the footer already
+      // communicate this. Toasts stack up and cover items while the
+      // tech is walking the trailer.
       // Patch local state with the updated item.
       setData((d) => {
         if (!d) return d;
