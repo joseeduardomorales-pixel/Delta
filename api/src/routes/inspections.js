@@ -22,6 +22,10 @@
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { getSupabaseAdmin } from '../services/supabaseAdmin.js';
+import {
+  resolveAssetWithMeter,
+  insertManualMeter,
+} from '../services/workOrderHelpers.js';
 import { attachStagingToWorkOrder, signedReadUrl, deletePhotoById } from '../services/storage.js';
 import { logger } from '../logger.js';
 
@@ -82,6 +86,190 @@ inspectionsRouter.get('/api/inspections/mine', requireAuth, async (req, res) => 
   });
 
   res.json({ inspections: decorated });
+});
+
+// ───── POST /api/inspections/start ────────────────────────────────────────────
+// UI-driven start (vs. the chat tool's start_inspection). Caller passes an
+// explicit template_id (the modal picker already filtered by scope, so no
+// fuzzy match here). Resolves or opens a WO on the asset for the caller,
+// materializes the template's items, creates the work_order_inspections
+// row, returns navigation info.
+//
+// Body: { asset_unit_number, template_id, manual_meter_value? }
+// Response:
+//   200 { work_order_id, inspection_id, item_count, url }
+//   200 { needs_meter: true, asset_unit_number, meter_unit, last_known }
+//   409 { error: 'inspection_already_started', inspection_id, work_order_id }
+//   404 { error: 'asset_not_found' | 'template_not_found' }
+inspectionsRouter.post('/api/inspections/start', requireAuth, async (req, res) => {
+  try {
+    if (!['admin', 'tech'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'forbidden' });
+    }
+    const { asset_unit_number, template_id, manual_meter_value } = req.body || {};
+    if (!asset_unit_number || !template_id) {
+      return res
+        .status(400)
+        .json({ error: 'missing_fields', message: 'asset_unit_number and template_id are required.' });
+    }
+
+    const admin = getSupabaseAdmin();
+
+    // 1. Resolve asset + meter.
+    const unit = String(asset_unit_number).trim().toUpperCase();
+    const { asset, meter, meter_unit, last_known, needs_meter } =
+      await resolveAssetWithMeter(admin, unit);
+    if (!asset) return res.status(404).json({ error: 'asset_not_found' });
+
+    // 2. Resolve template (must be active).
+    const { data: template } = await admin
+      .from('inspection_templates')
+      .select('id, name, scope, active')
+      .eq('id', template_id)
+      .eq('active', true)
+      .maybeSingle();
+    if (!template) {
+      return res.status(404).json({ error: 'template_not_found_or_inactive' });
+    }
+
+    // 3. Meter prompt — same shape as open_work_order so the UI can reuse logic.
+    let openingMeter = meter;
+    if (needs_meter) {
+      if (manual_meter_value == null) {
+        return res.json({
+          needs_meter: true,
+          asset_unit_number: asset.unit_number,
+          meter_unit,
+          last_known: last_known
+            ? {
+                value: last_known.value,
+                recorded_at: last_known.recorded_at,
+                recorded_human: last_known.recorded_human,
+              }
+            : null,
+        });
+      }
+      try {
+        openingMeter = await insertManualMeter({
+          admin,
+          assetId: asset.id,
+          unit: meter_unit,
+          value: manual_meter_value,
+          userId: req.user.id,
+        });
+      } catch (e) {
+        return res.status(400).json({ error: e.message });
+      }
+    }
+
+    // 4. Reuse caller's open WO on this asset if one exists, else open a new one.
+    let woId;
+    const { data: existing } = await admin
+      .from('work_orders')
+      .select('id, status')
+      .eq('asset_id', asset.id)
+      .eq('user_id', req.user.id)
+      .in('status', ['open', 'in_progress'])
+      .order('started_at', { ascending: false })
+      .limit(1);
+    if (existing?.length) {
+      woId = existing[0].id;
+    } else {
+      const { data: wo, error } = await admin
+        .from('work_orders')
+        .insert({
+          asset_id: asset.id,
+          asset_unit_number: asset.unit_number,
+          user_id: req.user.id,
+          status: 'in_progress',
+          approval_status: 'pending_review',
+          opening_meter_reading_id: openingMeter?.id ?? null,
+        })
+        .select('id')
+        .single();
+      if (error) throw new Error(error.message);
+      woId = wo.id;
+    }
+
+    // 5. Refuse if this template was already started on this WO — return the
+    //    existing inspection so the UI can navigate there.
+    const { data: dup } = await admin
+      .from('work_order_inspections')
+      .select('id')
+      .eq('work_order_id', woId)
+      .eq('template_id', template.id)
+      .maybeSingle();
+    if (dup) {
+      return res.status(409).json({
+        error: 'inspection_already_started',
+        inspection_id: dup.id,
+        work_order_id: woId,
+        url: `/work-orders/${woId}/inspect/${dup.id}`,
+      });
+    }
+
+    // 6. Materialize template items.
+    const { data: tplItems } = await admin
+      .from('inspection_template_items')
+      .select('id, text, section_sequence, item_sequence')
+      .eq('template_id', template.id)
+      .order('section_sequence', { ascending: true })
+      .order('item_sequence', { ascending: true });
+
+    // Compute starting sequence so we don't collide with existing WO items.
+    const { data: maxSeq } = await admin
+      .from('work_order_items')
+      .select('sequence')
+      .eq('work_order_id', woId)
+      .order('sequence', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    let nextSeq = (maxSeq?.sequence ?? -1) + 1;
+
+    // Insert the inspection row first so item insert errors can roll it back.
+    const { data: insp, error: inspErr } = await admin
+      .from('work_order_inspections')
+      .insert({
+        work_order_id: woId,
+        template_id: template.id,
+        started_by: req.user.id,
+      })
+      .select('id, display_seq')
+      .single();
+    if (inspErr) throw new Error(inspErr.message);
+
+    const rows = (tplItems || []).map((ti) => ({
+      work_order_id: woId,
+      sequence: nextSeq++,
+      source: 'inspection_template',
+      source_inspection_template_item_id: ti.id,
+      inspection_template_id: template.id,
+      type: 'inspection',
+      title: ti.text,
+      status: 'pending',
+    }));
+    if (rows.length) {
+      const { error: itemsErr } = await admin
+        .from('work_order_items')
+        .insert(rows);
+      if (itemsErr) {
+        // Roll back the inspection row so we don't leave a stub.
+        await admin.from('work_order_inspections').delete().eq('id', insp.id);
+        throw new Error(itemsErr.message);
+      }
+    }
+
+    return res.json({
+      work_order_id: woId,
+      inspection_id: insp.id,
+      item_count: rows.length,
+      template_name: template.name,
+      url: `/work-orders/${woId}/inspect/${insp.id}`,
+    });
+  } catch (e) {
+    logger.error({ err: e.message }, 'start inspection: unhandled');
+    return res.status(500).json({ error: 'start_inspection_failed', message: e.message });
+  }
 });
 
 // ───── GET /api/inspection-templates ─────────────────────────────────────────

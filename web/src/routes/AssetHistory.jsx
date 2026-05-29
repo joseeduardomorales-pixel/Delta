@@ -25,6 +25,7 @@ import { Header, Card, Badge, SectionLabel, Banner, Button, Modal, useToast } fr
 import { cn } from '../lib/cn.js';
 import { woLabel, issueLabel, inspectionLabel } from '../lib/numbers.js';
 import ReportIssueButton from '../components/ReportIssueButton.jsx';
+import StartInspectionButton from '../components/StartInspectionButton.jsx';
 
 const easeOut = [0.16, 1, 0.3, 1];
 
@@ -615,11 +616,19 @@ export default function AssetHistory() {
                 </p>
               )}
             </div>
-            <ReportIssueButton
-              lockedAsset={unit.toUpperCase()}
-              variant="compact"
-              onSubmitted={() => load()}
-            />
+            <div className="flex items-center gap-2 flex-wrap">
+              <StartInspectionButton
+                asset={asset}
+                accessToken={session.access_token}
+                variant="compact"
+                onStarted={() => load()}
+              />
+              <ReportIssueButton
+                lockedAsset={unit.toUpperCase()}
+                variant="compact"
+                onSubmitted={() => load()}
+              />
+            </div>
           </div>
         </motion.div>
 
