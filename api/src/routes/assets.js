@@ -193,6 +193,11 @@ assetsRouter.get(
                   .from('work_orders')
                   .select('id')
                   .eq('asset_id', assetId)
+                  // Exclude voided WOs — their inspections were never
+                  // meant to count and shouldn't surface on the asset
+                  // history page. (Without this filter, voiding a WO
+                  // doesn't visually clear the inspection it owned.)
+                  .neq('status', 'voided')
                   .order('started_at', { ascending: false })
                   .limit(limit)
               ).data?.map((w) => w.id) || ['00000000-0000-0000-0000-000000000000'],

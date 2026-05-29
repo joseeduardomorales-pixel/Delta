@@ -47,9 +47,16 @@ inspectionsRouter.get('/api/inspections/mine', requireAuth, async (req, res) => 
     .limit(20);
   if (onlyOpen) q = q.is('completed_at', null);
 
-  const { data: insps, error } = await q;
+  const { data: rawInsps, error } = await q;
   if (error) return res.status(500).json({ error: error.message });
-  if (!insps?.length) return res.json({ inspections: [] });
+  if (!rawInsps?.length) return res.json({ inspections: [] });
+
+  // Exclude inspections whose parent WO has been voided. The "Resume"
+  // banner is a tech-facing affordance — a voided WO is no longer
+  // something to resume. The DB query joins work_orders but doesn't
+  // filter by its status, so we filter here.
+  const insps = rawInsps.filter((i) => i.work_order?.status !== 'voided');
+  if (!insps.length) return res.json({ inspections: [] });
 
   // Per-inspection progress: count items by status/result.
   const woIds = [...new Set(insps.map((i) => i.work_order_id))];

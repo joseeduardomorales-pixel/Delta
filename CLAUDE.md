@@ -611,6 +611,14 @@ KNOWN GOTCHAS (must-read before touching these files)
     and break the loop. loadHistory ALSO filters empty rows on
     read as a backstop. Never persist content=[] — it cascades.
 
+  - VOIDED WO INSPECTIONS: any endpoint that LISTS inspections
+    across multiple WOs (vs. one specific WO by id) must exclude
+    voided WOs. Otherwise voiding a WO leaves its inspection
+    visible on the Resume banner / asset history Inspections
+    section / wherever else. Current list endpoints with this
+    filter: /api/inspections/mine, /api/assets/:unit/work-orders.
+    Action endpoints scoped to a known WO id don't need it.
+
 ────────────────────────────────────────────────────────────────
 CURRENT STATE (update each phase)
 ────────────────────────────────────────────────────────────────
