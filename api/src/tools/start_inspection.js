@@ -183,7 +183,7 @@ export const startInspection = {
     // Materialize one work_order_item per template item.
     const { data: tplItems } = await admin
       .from('inspection_template_items')
-      .select('id, text, section_sequence, item_sequence')
+      .select('id, text, description, section_sequence, item_sequence')
       .eq('template_id', template.id)
       .order('section_sequence', { ascending: true })
       .order('item_sequence', { ascending: true });
@@ -218,6 +218,7 @@ export const startInspection = {
       inspection_template_id: template.id,
       type: 'inspection',
       title: ti.text,
+      description: ti.description || null,
       status: 'pending',
     }));
     if (rows.length) {

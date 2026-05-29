@@ -211,7 +211,7 @@ inspectionsRouter.post('/api/inspections/start', requireAuth, async (req, res) =
     // 6. Materialize template items.
     const { data: tplItems } = await admin
       .from('inspection_template_items')
-      .select('id, text, section_sequence, item_sequence')
+      .select('id, text, description, section_sequence, item_sequence')
       .eq('template_id', template.id)
       .order('section_sequence', { ascending: true })
       .order('item_sequence', { ascending: true });
@@ -246,6 +246,7 @@ inspectionsRouter.post('/api/inspections/start', requireAuth, async (req, res) =
       inspection_template_id: template.id,
       type: 'inspection',
       title: ti.text,
+      description: ti.description || null,
       status: 'pending',
     }));
     if (rows.length) {
@@ -291,13 +292,13 @@ inspectionsRouter.get('/api/inspection-templates/:id', requireAuth, async (req, 
   const [{ data: tpl, error: e1 }, { data: items, error: e2 }] = await Promise.all([
     admin
       .from('inspection_templates')
-      .select('id, name, description, scope, active')
+      .select('id, name, description, scope, active, quick_reference')
       .eq('id', req.params.id)
       .maybeSingle(),
     admin
       .from('inspection_template_items')
       .select(
-        'id, section, section_sequence, item_sequence, text, kind, good_answer, measurement_unit, measurement_min, measurement_max, required',
+        'id, section, section_sequence, item_sequence, text, description, kind, good_answer, measurement_unit, measurement_min, measurement_max, required, requires_photo_on_fail',
       )
       .eq('template_id', req.params.id)
       .order('section_sequence', { ascending: true })
@@ -464,7 +465,7 @@ inspectionsRouter.get('/api/inspections/:id', requireAuth, async (req, res) => {
       `id, work_order_id, template_id, started_at, completed_at,
        technician_signed_at, supervisor_signed_at, notes, display_seq,
        last_pm_date, last_pm_hours,
-       template:inspection_templates ( id, name, description, scope ),
+       template:inspection_templates ( id, name, description, scope, quick_reference ),
        work_order:work_orders ( id, asset_unit_number, status, started_at, user_id, display_seq,
          user:users!work_orders_user_id_fkey ( handle ) ),
        started_by_user:users!work_order_inspections_started_by_fkey ( id, full_name, handle )`,
@@ -485,7 +486,7 @@ inspectionsRouter.get('/api/inspections/:id', requireAuth, async (req, res) => {
        template_item:inspection_template_items!work_order_items_source_inspection_template_item_id_fkey
          ( id, section, section_sequence, item_sequence, kind, good_answer,
            measurement_unit, measurement_min, measurement_max, required,
-           requires_photo_on_fail ),
+           requires_photo_on_fail, description ),
        photos:action_photos!action_photos_work_order_item_id_fkey
          ( id, storage_path, caption, uploaded_at )`,
     )

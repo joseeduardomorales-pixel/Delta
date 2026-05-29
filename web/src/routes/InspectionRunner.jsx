@@ -26,6 +26,8 @@ import {
   WifiOff,
   RotateCw,
   ChevronRight,
+  ChevronDown,
+  BookOpen,
 } from 'lucide-react';
 import { useAuth } from '../auth/AuthProvider.jsx';
 import { API_URL, supabase } from '../lib/supabase.js';
@@ -54,21 +56,34 @@ import {
 const easeOut = [0.16, 1, 0.3, 1];
 const MAX_PHOTOS = 4;
 
-// Page partitioning by section_sequence on the seeded reefer template.
-//   Page 1: sections 1, 2, 3   (Reefer Unit)
-//   Page 2: sections 4-9       (Trailer)
-//   Page 3: section 10         (Final Assessment)
-const PAGES = [
+// Reefer Trailer Inspection has 10 distinct sections — too many for one
+// scroll, so we split into 3 deliberate pages. Other templates (truck
+// brake/tire, trailer brake/tire) have ≤3 sections and live on a single
+// page (Q3 in the template design = multipage only when necessary).
+const REEFER_PAGES = [
   { id: 'reefer', label: 'Reefer unit', sectionSeqs: [1, 2, 3] },
   { id: 'trailer', label: 'Trailer', sectionSeqs: [4, 5, 6, 7, 8, 9] },
   { id: 'final', label: 'Final', sectionSeqs: [10] },
 ];
 
-function partitionSections(sections) {
-  const buckets = PAGES.map(() => []);
+// Pick a pagination strategy from the sections we got. Returns a list of
+// page metadata objects compatible with the REEFER_PAGES shape.
+function buildPages(sections) {
+  if (!sections || sections.length === 0) return [];
+  if (sections.length <= 3) {
+    const allSeqs = sections
+      .map((s) => s.items?.[0]?.template_item?.section_sequence)
+      .filter((v) => v != null);
+    return [{ id: 'all', label: 'All checks', sectionSeqs: allSeqs }];
+  }
+  return REEFER_PAGES;
+}
+
+function partitionSections(sections, pages) {
+  const buckets = pages.map(() => []);
   for (const sec of sections || []) {
     const seq = sec.items?.[0]?.template_item?.section_sequence;
-    const pageIdx = PAGES.findIndex((p) => p.sectionSeqs.includes(seq));
+    const pageIdx = pages.findIndex((p) => p.sectionSeqs.includes(seq));
     if (pageIdx >= 0) buckets[pageIdx].push(sec);
   }
   // Sort each bucket by section_sequence to keep deterministic order.
@@ -410,6 +425,48 @@ function PhotoTile({ src, onRemove, onUndoRemove, pendingRemove, tone, badge }) 
   );
 }
 
+// ── Quick reference cheat sheet (collapsible) ───────────────────────────────
+// Per-template OOS thresholds the tech might want to glance at without
+// leaving the runner. Defaults to collapsed so it doesn't take space on
+// the common case where the tech already knows the criteria.
+function QuickReferencePanel({ text }) {
+  const [open, setOpen] = useState(false);
+  if (!text || !text.trim()) return null;
+  return (
+    <div className="mb-4 rounded-xl border border-border bg-card overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className={cn(
+          'w-full flex items-center justify-between gap-3 px-4 py-3',
+          'text-sm text-foreground hover:bg-muted/30 transition-colors',
+        )}
+      >
+        <span className="inline-flex items-center gap-2">
+          <BookOpen size={15} className="text-accent" />
+          <span className="font-medium">Quick reference</span>
+          <span className="text-xs text-muted-foreground">
+            — key OOS thresholds for this inspection
+          </span>
+        </span>
+        {open ? (
+          <ChevronDown size={16} className="text-muted-foreground" />
+        ) : (
+          <ChevronRight size={16} className="text-muted-foreground" />
+        )}
+      </button>
+      {open && (
+        <div className="px-4 pb-4 pt-1 border-t border-border bg-muted/20">
+          <p className="text-[13px] text-foreground/85 whitespace-pre-wrap leading-relaxed font-mono">
+            {text}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── One row per inspection item (memoized so unchanged items skip render) ───
 const ItemRow = memo(
   function ItemRow({ item, onMark, onOpenIssue, busy }) {
@@ -439,6 +496,11 @@ const ItemRow = memo(
             <p className="text-[15px] sm:text-base text-foreground leading-snug">
               {item.title}
             </p>
+            {tpl.description && (
+              <p className="mt-1 text-[12px] text-muted-foreground leading-relaxed">
+                {tpl.description}
+              </p>
+            )}
             {tpl.measurement_unit && (
               <p className="text-[11px] text-muted-foreground mt-1">
                 Measurement: {tpl.measurement_unit}
@@ -677,10 +739,15 @@ export default function InspectionRunner() {
     }
   }
 
-  // Partition into 3 pages. Computed once per data change.
-  const pages = useMemo(
-    () => partitionSections(data?.sections || []),
+  // Build the pagination strategy from the actual sections (reefer
+  // gets the 3-tab split; simpler templates get single-page).
+  const pageMeta = useMemo(
+    () => buildPages(data?.sections || []),
     [data?.sections],
+  );
+  const pages = useMemo(
+    () => partitionSections(data?.sections || [], pageMeta),
+    [data?.sections, pageMeta],
   );
 
   // Overall progress (across all pages).
@@ -751,8 +818,11 @@ export default function InspectionRunner() {
     }
   }
 
-  const currentPage = pages[pageIdx] || [];
-  const currentPageMeta = PAGES[pageIdx];
+  // Clamp pageIdx when pageMeta shrinks (e.g. switching from a 3-page
+  // template to a single-page one mid-navigation shouldn't crash).
+  const safePageIdx = Math.min(pageIdx, Math.max(0, pageMeta.length - 1));
+  const currentPage = pages[safePageIdx] || [];
+  const currentPageMeta = pageMeta[safePageIdx];
   const showPmForm = currentPageMeta?.id === 'reefer';
 
   return (
@@ -880,9 +950,10 @@ export default function InspectionRunner() {
               </div>
             </div>
 
-            {/* Page tabs */}
+            {/* Page tabs — hide if there's only one page (no value in showing it). */}
+            {pageMeta.length > 1 && (
             <div className="mb-5 flex items-center gap-1 border-b border-border overflow-x-auto">
-              {PAGES.map((p, idx) => {
+              {pageMeta.map((p, idx) => {
                 const counts = pageDone[idx] || { total: 0, done: 0, fail: 0 };
                 return (
                   <button
@@ -912,6 +983,12 @@ export default function InspectionRunner() {
                 );
               })}
             </div>
+            )}
+
+            {/* Quick reference panel — per-template cheat sheet of OOS thresholds */}
+            {data.inspection?.template?.quick_reference && (
+              <QuickReferencePanel text={data.inspection.template.quick_reference} />
+            )}
 
             {/* Current page sections */}
             <div className="space-y-10">
@@ -974,8 +1051,8 @@ export default function InspectionRunner() {
               >
                 <ChevronLeft size={16} /> Previous
               </Button>
-              {pageIdx < PAGES.length - 1 ? (
-                <Button onClick={() => setPageIdx((i) => Math.min(PAGES.length - 1, i + 1))}>
+              {pageIdx < pageMeta.length - 1 ? (
+                <Button onClick={() => setPageIdx((i) => Math.min(pageMeta.length - 1, i + 1))}>
                   Next <ChevronRight size={16} />
                 </Button>
               ) : isCompleted ? (
@@ -996,7 +1073,7 @@ export default function InspectionRunner() {
             </div>
 
             {/* Sign & submit context — only shows on the final page when not yet done */}
-            {pageIdx === PAGES.length - 1 && !isCompleted && (
+            {pageIdx === pageMeta.length - 1 && !isCompleted && (
               <Card className="p-5 mb-12">
                 <div className="flex items-baseline justify-between gap-3 mb-2 flex-wrap">
                   <h2 className="font-display text-xl">Sign & submit</h2>
