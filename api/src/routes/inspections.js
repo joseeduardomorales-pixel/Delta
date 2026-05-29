@@ -484,7 +484,8 @@ inspectionsRouter.get('/api/inspections/:id', requireAuth, async (req, res) => {
        source_inspection_template_item_id,
        template_item:inspection_template_items!work_order_items_source_inspection_template_item_id_fkey
          ( id, section, section_sequence, item_sequence, kind, good_answer,
-           measurement_unit, measurement_min, measurement_max, required ),
+           measurement_unit, measurement_min, measurement_max, required,
+           requires_photo_on_fail ),
        photos:action_photos!action_photos_work_order_item_id_fkey
          ( id, storage_path, caption, uploaded_at )`,
     )
@@ -599,7 +600,7 @@ inspectionsRouter.patch(
         .select(
           `id, work_order_id, inspection_template_id, source_inspection_template_item_id, title,
            template_item:inspection_template_items!work_order_items_source_inspection_template_item_id_fkey
-             ( id, kind, good_answer )`,
+             ( id, kind, good_answer, requires_photo_on_fail )`,
         )
         .eq('id', req.params.itemId)
         .eq('work_order_id', insp.work_order_id)
@@ -680,7 +681,13 @@ inspectionsRouter.patch(
             message: 'A description of the issue is required (3+ chars).',
           });
         }
-        if (existingCount + newPhotoList.length < 1) {
+        // Photo requirement is per-template-item. Final-assessment yes_no
+        // questions (e.g. "Safe to road?") are subjective summary calls,
+        // not specific defects — they opt out by setting
+        // template_item.requires_photo_on_fail = false. Notes are still
+        // required so the tech explains the NO.
+        const requirePhoto = tk?.requires_photo_on_fail !== false;
+        if (requirePhoto && existingCount + newPhotoList.length < 1) {
           return res.status(400).json({
             error: 'photo_required',
             message: 'At least one photo is required for an issue.',

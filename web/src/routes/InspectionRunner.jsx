@@ -92,6 +92,10 @@ function IssueModal({ open, item, inspectionId, onClose, onConfirm, busy }) {
   const tpl = item?.template_item || {};
   const isMeasurement = tpl.kind === 'measurement';
   const isYesNo = tpl.kind === 'yes_no';
+  // Per-item opt-out for summary questions (e.g. "Safe to road?"). When
+  // false, the photo upload section is hidden and the modal collects
+  // just an explanation. The backend mirrors this rule.
+  const photoRequired = tpl.requires_photo_on_fail !== false;
 
   const [notes, setNotes] = useState('');
   const [measurement, setMeasurement] = useState('');
@@ -176,7 +180,9 @@ function IssueModal({ open, item, inspectionId, onClose, onConfirm, busy }) {
   }
 
   const descOk = notes.trim().length >= 3;
-  const photosOk = visibleExisting.length + visibleLocal.length + newFiles.length >= 1;
+  const photosOk =
+    !photoRequired ||
+    visibleExisting.length + visibleLocal.length + newFiles.length >= 1;
   const canSubmit = descOk && photosOk && !busy;
 
   async function submit() {
@@ -215,8 +221,12 @@ function IssueModal({ open, item, inspectionId, onClose, onConfirm, busy }) {
       onClose={onClose}
       destructive
       maxWidth="lg"
-      title="Report an issue"
-      description="An open issue will be created on this asset and the next tech will see it. A description and at least one photo are required."
+      title={photoRequired ? 'Report an issue' : 'Why NO?'}
+      description={
+        photoRequired
+          ? 'An open issue will be created on this asset and the next tech will see it. A description and at least one photo are required.'
+          : 'Explain your answer. An issue will be recorded for the admin to review. Photos are optional for this question.'
+      }
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={busy}>
@@ -260,7 +270,12 @@ function IssueModal({ open, item, inspectionId, onClose, onConfirm, busy }) {
         <div>
           <div className="flex items-baseline justify-between mb-2">
             <div className="text-xs font-medium text-muted-foreground">
-              Photos <span className="text-danger">(required, at least 1)</span>
+              Photos{' '}
+              {photoRequired ? (
+                <span className="text-danger">(required, at least 1)</span>
+              ) : (
+                <span className="text-muted-foreground/70">(optional)</span>
+              )}
             </div>
             <span className="text-[11px] text-muted-foreground">
               {totalCount}/{MAX_PHOTOS}
@@ -330,7 +345,7 @@ function IssueModal({ open, item, inspectionId, onClose, onConfirm, busy }) {
               </label>
             )}
           </div>
-          {!photosOk && (
+          {!photosOk && photoRequired && (
             <p className="mt-2 text-[11px] text-muted-foreground">
               Take a photo with the camera or pick one from the library.
             </p>
