@@ -741,12 +741,27 @@ export default function InspectionRunner() {
   }
 
   async function mark(itemId, payload) {
-    await enqueueAction({
-      kind: 'mark_item',
-      inspection_id: inspectionId,
-      item_id: itemId,
-      payload,
-    });
+    // Surface enqueue failures so the next class of silent sync bug
+    // isn't invisible to the tech. (Identified during the stress-test
+    // of the fetch-binding root cause.)
+    try {
+      await enqueueAction({
+        kind: 'mark_item',
+        inspection_id: inspectionId,
+        item_id: itemId,
+        payload,
+      });
+    } catch (e) {
+      pushToast({
+        tone: 'danger',
+        title: "Couldn't save tap",
+        text: e.message || 'unknown error',
+        ttl: 6000,
+      });
+      // eslint-disable-next-line no-console
+      console.error('[inspection] mark enqueue failed', { itemId, payload, error: e });
+      throw e;
+    }
   }
 
   async function submitIssue(itemId, { payload, newFileBlobs, keepLocalPhotoIds }) {

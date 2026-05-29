@@ -46,17 +46,27 @@ export function useSyncEngine({ inspectionId, apiUrl, getAccessToken }) {
 
     refreshCounts();
 
+    // `.catch(console.error)` on every drain call so unhandled rejections
+    // don't disappear silently. (The fetch-binding bug was masked for
+    // months because these were bare promises.)
+    function safeDrain() {
+      engineRef.current?.drain()?.catch?.((e) => {
+        // eslint-disable-next-line no-console
+        console.error('[sync] drain rejected', e);
+      });
+    }
+
     // Drain whenever the store changes (new action enqueued).
     const unsubStore = subscribe(inspectionId, () => {
       refreshCounts();
-      engineRef.current?.drain();
+      safeDrain();
     });
     // Initial drain on mount.
-    engineRef.current?.drain();
+    safeDrain();
 
     function onOnline() {
       setOnline(true);
-      engineRef.current?.drain();
+      safeDrain();
     }
     function onOffline() {
       setOnline(false);

@@ -287,3 +287,58 @@ describe('SyncEngine — finalize flow', () => {
     expect(await store.getActionsForInspection(INSP)).toHaveLength(0);
   });
 });
+
+describe('SyncEngine — regression: fetch this-binding', () => {
+  // Reproduces the production bug where storing native fetch as a class
+  // property (this.fetchImpl = ctx.fetchImpl || fetch) stripped the
+  // Window binding and threw "Illegal invocation" on every call.
+  //
+  // Repro by installing a strict-this enforcer onto globalThis.fetch.
+  // The SyncEngine MUST construct fetchImpl such that the wrapped call
+  // succeeds without the SyncEngine instance as `this`.
+  it('drains successfully when default fetchImpl is used (no ctx.fetchImpl)', async () => {
+    const calls = [];
+    const original = globalThis.fetch;
+    const strictFetch = function (url, opts) {
+      // Native browser fetch is strict: if called with a wrong `this`,
+      // it throws. Force the same behavior here.
+      if (this !== undefined && this !== globalThis) {
+        throw new TypeError(
+          "Failed to execute 'fetch' on 'Window': Illegal invocation",
+        );
+      }
+      calls.push({ url, method: opts?.method });
+      return Promise.resolve(
+        jsonResponse({
+          item: { id: ITEM, status: 'done', inspection_result: 'pass' },
+        }),
+      );
+    };
+    globalThis.fetch = strictFetch;
+
+    try {
+      await store.enqueueAction({
+        kind: 'mark_item',
+        inspection_id: INSP,
+        item_id: ITEM,
+        payload: { inspection_result: 'pass' },
+      });
+
+      // CRITICAL: build the engine without passing fetchImpl. That forces
+      // the production code path (the wrapper around globalThis.fetch).
+      const engine = new SyncEngine({
+        apiUrl: API,
+        getAccessToken: async () => FIXED_TOKEN,
+      });
+
+      await engine.drain();
+
+      // PATCH was made.
+      expect(calls.some((c) => c.url.includes('/items/'))).toBe(true);
+      // Action was deleted on success (so the drain completed).
+      expect(await store.getActionsForInspection(INSP)).toHaveLength(0);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});

@@ -277,6 +277,18 @@ export async function getSyncCounts(inspectionId) {
   };
 }
 
+// Get every action regardless of status — used by the heal pass that
+// needs to inspect needs_attention rows the normal drain skips.
+export async function getAllActionsUnfiltered() {
+  const db = await getDb();
+  return db.getAll('pending_actions');
+}
+
+export async function getAllPhotosUnfiltered() {
+  const db = await getDb();
+  return db.getAll('pending_photos');
+}
+
 // Diagnostic snapshot of everything in IndexedDB relevant to one inspection
 // PLUS the whole-DB sync state (action counts by status, sample of stuck or
 // failed actions). Used by the in-app 'diag' button — no dev tools needed

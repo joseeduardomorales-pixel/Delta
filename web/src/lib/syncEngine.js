@@ -32,7 +32,14 @@ export class SyncEngine {
   // }
   constructor(ctx) {
     this.ctx = ctx;
-    this.fetchImpl = ctx.fetchImpl || fetch;
+    // Why the wrapper: storing `fetch` as `this.fetchImpl` and calling it
+    // as `this.fetchImpl(...)` invokes the browser's fetch with
+    // `this = SyncEngine instance`. Browser `fetch` requires `this` to be
+    // `Window`/`globalThis` and throws "Illegal invocation" otherwise.
+    // Wrapping in a free function makes the implicit `this` irrelevant.
+    // (Regressed since task #57; invisible because tests pass a custom
+    //  fetchImpl mock that doesn't enforce the this-binding contract.)
+    this.fetchImpl = ctx.fetchImpl || ((url, init) => fetch(url, init));
   }
 
   // ── Public API ──────────────────────────────────────────────────────────
@@ -62,6 +69,13 @@ export class SyncEngine {
 
   // ── Internals ───────────────────────────────────────────────────────────
   async _drainOnce() {
+    // 0. One-time-ish heal: actions and photos that got marked failed
+    //    because of the fetch-this-binding bug (or its photo-upload
+    //    cousin) are now retryable. Reset them so they flow through the
+    //    normal drain. Runs every drain; cheap because most DBs have
+    //    no rows matching these error strings.
+    await this._healStaleFailures();
+
     // 1. Upload any queued photos first so their staging_paths are
     //    available when we process the actions that reference them.
     const photoChanged = await this._uploadQueuedPhotos();
@@ -96,6 +110,60 @@ export class SyncEngine {
     }
 
     return photoChanged || actionChanged;
+  }
+
+  // Heal any actions / photos that got stuck on the fetch-this-binding
+  // bug (or its photo-upload cousin, which had the same root cause).
+  // Resets their status to 'queued' + clears the error so the normal
+  // drain retries them. Idempotent — safe to call every drain; a clean
+  // DB sees zero matches and exits fast.
+  async _healStaleFailures() {
+    const matches = (s) =>
+      typeof s === 'string' &&
+      (s.includes('Illegal invocation') ||
+        s === 'photo_upload_failed');
+
+    const allActions = await store.getAllActionsUnfiltered();
+    let changed = false;
+    for (const a of allActions) {
+      // Action was permanently failed by needs_attention. Reset it.
+      if (a.status === 'needs_attention' && matches(a.error)) {
+        await store.updateActionStatus(a.id, {
+          status: 'queued',
+          error: null,
+          attempts: 0,
+        });
+        changed = true;
+      }
+      // Action was looping retries on the fetch bug with attempts > 0.
+      // Reset attempts so it doesn't take a long backoff to retry.
+      else if (
+        a.status === 'queued' &&
+        matches(a.error) &&
+        (a.attempts || 0) > 0
+      ) {
+        await store.updateActionStatus(a.id, {
+          error: null,
+          attempts: 0,
+        });
+        changed = true;
+      }
+    }
+
+    // Photos that hit PHOTO_MAX_ATTEMPTS got marked 'failed'. The same
+    // fetch bug caused those uploads to fail. Reset to 'queued'.
+    const allPhotos = await store.getAllPhotosUnfiltered();
+    for (const p of allPhotos) {
+      if (p.status === 'failed') {
+        await store.updatePhotoStatus(p.id, {
+          status: 'queued',
+          attempts: 0,
+        });
+        changed = true;
+      }
+    }
+
+    return changed;
   }
 
   async _uploadQueuedPhotos() {
