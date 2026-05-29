@@ -277,21 +277,23 @@ export async function getSyncCounts(inspectionId) {
   };
 }
 
-// Diagnostic snapshot of everything in IndexedDB relevant to one inspection.
-// Used by the long-press dump on the runner — no dev tools needed on
-// tablets. Photo blobs are NOT included (would explode the dump size); we
-// surface only their metadata (id, status, attempts, error, size).
+// Diagnostic snapshot of everything in IndexedDB relevant to one inspection
+// PLUS the whole-DB sync state (action counts by status, sample of stuck or
+// failed actions). Used by the in-app 'diag' button — no dev tools needed
+// on tablets.
+//
+// Photo blobs are NOT included (would explode the dump size); only metadata.
 export async function getDiagnosticDump(inspectionId) {
   const db = await getDb();
   const allActions = await db.getAll('pending_actions');
   const allPhotos = await db.getAll('pending_photos');
   const cache = await db.get('inspection_cache', inspectionId);
 
-  const myActions = allActions
-    .filter((a) => a.inspection_id === inspectionId)
-    .map((a) => ({
+  function actionShape(a) {
+    return {
       id: a.id,
       kind: a.kind,
+      inspection_id: a.inspection_id,
       item_id: a.item_id,
       status: a.status,
       attempts: a.attempts,
@@ -301,7 +303,13 @@ export async function getDiagnosticDump(inspectionId) {
       payload_result: a.payload?.inspection_result,
       created_at: a.created_at,
       updated_at: a.updated_at,
-    }));
+    };
+  }
+
+  // For the CURRENT inspection: every action in full.
+  const myActions = allActions
+    .filter((a) => a.inspection_id === inspectionId)
+    .map(actionShape);
 
   const myPhotos = allPhotos
     .filter((p) => p.inspection_id === inspectionId)
@@ -316,23 +324,51 @@ export async function getDiagnosticDump(inspectionId) {
       created_at: p.created_at,
     }));
 
-  // Top-level totals across the whole DB (in case there's stray state
-  // from another inspection that's somehow leaking).
-  const totals = {
-    total_actions_in_db: allActions.length,
-    total_photos_in_db: allPhotos.length,
-    actions_for_this_inspection: myActions.length,
-    photos_for_this_inspection: myPhotos.length,
-  };
+  // For the WHOLE DB: counts by status + a sample of the most
+  // diagnostically interesting actions (any with errors, anything
+  // syncing with high attempts).
+  const byStatus = {};
+  const byInspection = {};
+  let maxAttempts = 0;
+  for (const a of allActions) {
+    byStatus[a.status] = (byStatus[a.status] || 0) + 1;
+    byInspection[a.inspection_id] = (byInspection[a.inspection_id] || 0) + 1;
+    if ((a.attempts || 0) > maxAttempts) maxAttempts = a.attempts || 0;
+  }
+  const erroredSample = allActions
+    .filter((a) => a.error || a.status === 'needs_attention')
+    .slice(0, 10)
+    .map(actionShape);
+  const stuckSample = allActions
+    .filter((a) => (a.attempts || 0) >= 1)
+    .sort((a, b) => (b.attempts || 0) - (a.attempts || 0))
+    .slice(0, 5)
+    .map(actionShape);
+  // First few queued so we can see what shape we're sending and to which URL.
+  const queuedSample = allActions
+    .filter((a) => a.status === 'queued')
+    .slice(0, 3)
+    .map(actionShape);
 
   return {
     inspection_id: inspectionId,
     cache_present: !!cache,
     cache_template_name: cache?.inspection?.template?.name ?? null,
     cache_section_count: cache?.sections?.length ?? null,
-    totals,
-    actions: myActions,
-    photos: myPhotos,
+    totals: {
+      total_actions_in_db: allActions.length,
+      total_photos_in_db: allPhotos.length,
+      actions_for_this_inspection: myActions.length,
+      photos_for_this_inspection: myPhotos.length,
+      max_attempts_across_db: maxAttempts,
+    },
+    db_action_status_counts: byStatus,
+    db_actions_per_inspection: byInspection,
+    db_errored_actions_sample: erroredSample,
+    db_high_attempts_sample: stuckSample,
+    db_queued_actions_sample: queuedSample,
+    this_inspection_actions: myActions,
+    this_inspection_photos: myPhotos,
     online: typeof navigator !== 'undefined' ? navigator.onLine : null,
     user_agent: typeof navigator !== 'undefined' ? navigator.userAgent : null,
     api_url: typeof window !== 'undefined' ? window.__DELTA_API_URL__ : null,

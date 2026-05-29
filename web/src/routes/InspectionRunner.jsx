@@ -719,7 +719,7 @@ export default function InspectionRunner() {
         pushToast({
           tone: 'success',
           title: 'Diagnostic copied',
-          text: `${dump.actions.length} actions, ${dump.photos.length} photos. Paste in chat.`,
+          text: `${dump.totals.total_actions_in_db} total actions in queue (${dump.totals.actions_for_this_inspection} this insp). Paste in chat.`,
           ttl: 6000,
         });
       } catch {
