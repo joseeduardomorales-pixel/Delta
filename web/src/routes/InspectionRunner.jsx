@@ -51,6 +51,7 @@ import {
   addPhoto,
   deletePhoto,
   getPhotosForItem,
+  getDiagnosticDump,
 } from '../lib/inspectionStore.js';
 
 const easeOut = [0.16, 1, 0.3, 1];
@@ -701,6 +702,64 @@ export default function InspectionRunner() {
     getAccessToken: resolveAccessToken,
   });
 
+  // Long-press the asset unit number → copy a JSON dump of the local
+  // IndexedDB sync state to the clipboard. Diagnostic-only path so we
+  // can read pending_actions + pending_photos on a tablet without
+  // requiring chrome://inspect.
+  const longPressRef = useRef({ timer: null, fired: false });
+  function startLongPress() {
+    longPressRef.current.fired = false;
+    longPressRef.current.timer = window.setTimeout(async () => {
+      longPressRef.current.fired = true;
+      try {
+        const dump = await getDiagnosticDump(inspectionId);
+        const text = JSON.stringify(dump, null, 2);
+        try {
+          await navigator.clipboard.writeText(text);
+          pushToast({
+            tone: 'success',
+            title: 'Diagnostic copied',
+            text: `${dump.actions.length} actions, ${dump.photos.length} photos. Paste in chat.`,
+            ttl: 6000,
+          });
+        } catch {
+          // Clipboard API can be denied (insecure context, perms). Fall
+          // back to a Modal — we'd rather have the tech screenshot than
+          // lose the dump entirely. For now: alert with text as last
+          // resort, since we don't have a generic "show text" modal yet.
+          // eslint-disable-next-line no-alert
+          window.prompt('Copy this diagnostic (long text):', text);
+        }
+      } catch (e) {
+        pushToast({
+          tone: 'danger',
+          title: 'Dump failed',
+          text: e.message,
+          ttl: 6000,
+        });
+      }
+    }, 1500);
+  }
+  function cancelLongPress() {
+    if (longPressRef.current.timer) {
+      window.clearTimeout(longPressRef.current.timer);
+      longPressRef.current.timer = null;
+    }
+  }
+  const diagnosticPressHandlers = {
+    onTouchStart: startLongPress,
+    onTouchEnd: cancelLongPress,
+    onTouchCancel: cancelLongPress,
+    onMouseDown: startLongPress,
+    onMouseUp: cancelLongPress,
+    onMouseLeave: cancelLongPress,
+    // Block context menu / text selection when the long-press fires so
+    // the browser's own long-press UI doesn't compete.
+    onContextMenu: (e) => {
+      if (longPressRef.current.fired) e.preventDefault();
+    },
+  };
+
   async function mark(itemId, payload) {
     await enqueueAction({
       kind: 'mark_item',
@@ -862,7 +921,11 @@ export default function InspectionRunner() {
           </h1>
           {data?.inspection?.work_order && (
             <p className="mt-2 text-sm text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1">
-              <span className="font-mono text-foreground">
+              <span
+                className="font-mono text-foreground select-none cursor-pointer"
+                title="Hold to copy sync diagnostic"
+                {...diagnosticPressHandlers}
+              >
                 {data.inspection.work_order.asset_unit_number}
               </span>
               <span>·</span>

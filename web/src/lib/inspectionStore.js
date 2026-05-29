@@ -277,6 +277,69 @@ export async function getSyncCounts(inspectionId) {
   };
 }
 
+// Diagnostic snapshot of everything in IndexedDB relevant to one inspection.
+// Used by the long-press dump on the runner — no dev tools needed on
+// tablets. Photo blobs are NOT included (would explode the dump size); we
+// surface only their metadata (id, status, attempts, error, size).
+export async function getDiagnosticDump(inspectionId) {
+  const db = await getDb();
+  const allActions = await db.getAll('pending_actions');
+  const allPhotos = await db.getAll('pending_photos');
+  const cache = await db.get('inspection_cache', inspectionId);
+
+  const myActions = allActions
+    .filter((a) => a.inspection_id === inspectionId)
+    .map((a) => ({
+      id: a.id,
+      kind: a.kind,
+      item_id: a.item_id,
+      status: a.status,
+      attempts: a.attempts,
+      error: a.error,
+      photo_ids: a.photo_ids || [],
+      payload_keys: a.payload ? Object.keys(a.payload) : [],
+      payload_result: a.payload?.inspection_result,
+      created_at: a.created_at,
+      updated_at: a.updated_at,
+    }));
+
+  const myPhotos = allPhotos
+    .filter((p) => p.inspection_id === inspectionId)
+    .map((p) => ({
+      id: p.id,
+      item_id: p.item_id,
+      status: p.status,
+      attempts: p.attempts,
+      staging_path: p.staging_path,
+      mime: p.mime,
+      blob_size: p.blob?.size ?? null,
+      created_at: p.created_at,
+    }));
+
+  // Top-level totals across the whole DB (in case there's stray state
+  // from another inspection that's somehow leaking).
+  const totals = {
+    total_actions_in_db: allActions.length,
+    total_photos_in_db: allPhotos.length,
+    actions_for_this_inspection: myActions.length,
+    photos_for_this_inspection: myPhotos.length,
+  };
+
+  return {
+    inspection_id: inspectionId,
+    cache_present: !!cache,
+    cache_template_name: cache?.inspection?.template?.name ?? null,
+    cache_section_count: cache?.sections?.length ?? null,
+    totals,
+    actions: myActions,
+    photos: myPhotos,
+    online: typeof navigator !== 'undefined' ? navigator.onLine : null,
+    user_agent: typeof navigator !== 'undefined' ? navigator.userAgent : null,
+    api_url: typeof window !== 'undefined' ? window.__DELTA_API_URL__ : null,
+    dump_collected_at: new Date().toISOString(),
+  };
+}
+
 // Test helper — wipe the DB. Not used in production.
 export async function _resetForTests() {
   const db = await getDb();
